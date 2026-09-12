@@ -373,7 +373,8 @@ router.post('/counselor/:id/approve-onboard', jwt_1.authenticateJWT, (0, jwt_1.a
                 update: { firstName, lastName, token, expiresAt, used: false },
                 create: { email: cleanEmail, firstName, lastName, token, expiresAt },
             });
-            const setupUrl = `${process.env.COUNSELOR_PORTAL_URL || 'http://localhost:5174'}/setup-profile?token=${token}`;
+            const counselorPortalBase = env_1.env.COUNSELOR_PORTAL_URL || (process.env.NODE_ENV === 'production' ? 'https://counselor.wellmindly.com' : 'http://localhost:5174');
+            const setupUrl = `${counselorPortalBase}/setup-profile?token=${token}`;
             await (0, mailer_1.sendEmail)({
                 to: cleanEmail,
                 subject: 'Congratulations! Your WellMindly Counselor Application is Approved',

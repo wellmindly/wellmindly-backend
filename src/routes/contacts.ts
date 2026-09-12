@@ -442,7 +442,8 @@ router.post(
           create: { email: cleanEmail, firstName, lastName, token, expiresAt },
         });
 
-        const setupUrl = `${process.env.COUNSELOR_PORTAL_URL || 'http://localhost:5174'}/setup-profile?token=${token}`;
+        const counselorPortalBase = env.COUNSELOR_PORTAL_URL || (process.env.NODE_ENV === 'production' ? 'https://counselor.wellmindly.com' : 'http://localhost:5174');
+        const setupUrl = `${counselorPortalBase}/setup-profile?token=${token}`;
 
         await sendEmail({
           to: cleanEmail,

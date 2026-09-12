@@ -46,6 +46,34 @@ const envSchema = z.object({
   AWS_S3_BUCKET: z.string().optional().default('wellmindly-assets'),
   AWS_ACCESS_KEY_ID: z.string().optional(),
   AWS_SECRET_ACCESS_KEY: z.string().optional(),
+  COUNSELOR_PORTAL_URL: z
+    .string()
+    .url()
+    .optional()
+    .default(
+      process.env.NODE_ENV === 'production'
+        ? 'https://counselor.wellmindly.com'
+        : 'http://localhost:5174'
+    ),
+  STUDENT_PORTAL_URL: z
+    .string()
+    .url()
+    .optional()
+    .default(
+      process.env.NODE_ENV === 'production'
+        ? 'https://wellmindly.com'
+        : 'http://localhost:5173'
+    ),
+  ADMIN_PORTAL_URL: z
+    .string()
+    .url()
+    .optional()
+    .default(
+      process.env.NODE_ENV === 'production'
+        ? 'https://admin.wellmindly.com'
+        : 'http://localhost:5175'
+    ),
+  MAINTENANCE_KEY: z.string().optional(),
 });
 
 const _env = envSchema.safeParse(process.env);

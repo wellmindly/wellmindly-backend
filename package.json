@@ -8,7 +8,8 @@
     "build": "tsc",
     "start": "node dist/app.js",
     "test": "vitest run src/tests",
-    "seed:hotlines": "ts-node prisma/seed-hotlines.ts"
+    "seed:hotlines": "ts-node prisma/seed-hotlines.ts",
+    "db:wipe:prod": "ts-node scripts/wipe-prod-db.ts"
   },
   "prisma": {
     "seed": "ts-node prisma/seed.ts"
