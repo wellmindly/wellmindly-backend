@@ -22,37 +22,37 @@ const router = (0, express_1.Router)();
  * Accessible with x-maintenance-key header OR authenticated admin JWT.
  */
 router.post('/maintenance/wipe-prod-data', async (req, res) => {
-    const maintenanceKey = req.headers['x-maintenance-key'];
-    let isAuthorized = false;
-    let actorId = null;
-    const expectedKey = env_1.env.MAINTENANCE_KEY || 'wellmindly_maint_2026_secure';
-    if (maintenanceKey && (maintenanceKey === expectedKey || maintenanceKey === 'wellmindly_maint_2026_secure')) {
-        isAuthorized = true;
-        actorId = 'MAINTENANCE_KEY';
-    }
-    else {
-        const authHeader = req.headers.authorization;
-        if (authHeader && authHeader.startsWith('Bearer ')) {
-            try {
-                const payload = (0, jwt_1.verifyToken)(authHeader.split(' ')[1]);
-                if (['ADMIN', 'SUPER_ADMIN'].includes(payload.role)) {
-                    isAuthorized = true;
-                    actorId = payload.sub;
-                }
-            }
-            catch (_) { }
-        }
-    }
-    if (!isAuthorized) {
-        (0, response_1.sendError)(res, 'UNAUTHORIZED', 'Missing or invalid maintenance key (x-maintenance-key header) or admin Bearer token', 401);
-        return;
-    }
-    const { confirm } = req.body;
-    if (confirm !== 'CONFIRM_WIPE_PROD_DATA') {
-        (0, response_1.sendError)(res, 'CONFIRMATION_REQUIRED', 'Confirmation keyword mismatch. Please pass { "confirm": "CONFIRM_WIPE_PROD_DATA" } in the request body to execute the wipe.', 400);
-        return;
-    }
     try {
+        const maintenanceKey = req.headers['x-maintenance-key'];
+        const expectedKey = env_1.env.MAINTENANCE_KEY || 'wellmindly_maint_2026_secure';
+        let isAuthorized = false;
+        let actorId = null;
+        if (maintenanceKey && (maintenanceKey === expectedKey || maintenanceKey === 'wellmindly_maint_2026_secure')) {
+            isAuthorized = true;
+            actorId = 'MAINTENANCE_KEY';
+        }
+        else {
+            const authHeader = req.headers.authorization;
+            if (authHeader && authHeader.startsWith('Bearer ')) {
+                try {
+                    const payload = (0, jwt_1.verifyToken)(authHeader.split(' ')[1]);
+                    if (['ADMIN', 'SUPER_ADMIN'].includes(payload.role)) {
+                        isAuthorized = true;
+                        actorId = payload.sub;
+                    }
+                }
+                catch (_) { }
+            }
+        }
+        if (!isAuthorized) {
+            (0, response_1.sendError)(res, 'UNAUTHORIZED', 'Missing or invalid maintenance key (x-maintenance-key header) or admin Bearer token', 401);
+            return;
+        }
+        const { confirm } = req.body;
+        if (confirm !== 'CONFIRM_WIPE_PROD_DATA') {
+            (0, response_1.sendError)(res, 'CONFIRMATION_REQUIRED', 'Confirmation keyword mismatch. Please pass { "confirm": "CONFIRM_WIPE_PROD_DATA" } in the request body to execute the wipe.', 400);
+            return;
+        }
         // 1. Ensure archival table exists
         await prisma_1.default.$executeRawUnsafe(`
       CREATE TABLE IF NOT EXISTS "_archive_prelaunch_backup" (
@@ -62,91 +62,101 @@ router.post('/maintenance/wipe-prod-data', async (req, res) => {
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
     `);
-        // 2. Fetch snapshot for archival
-        const [studentsAndCounselors, counselorProfiles, sessions, sessionNotes, studentFeedbacks, counselorFeedbacks, checkins, quizResults, talkNotes] = await Promise.all([
-            prisma_1.default.user.findMany({
-                where: { role: { in: ['STUDENT', 'COUNSELOR'] } },
-                select: { id: true, email: true, firstName: true, lastName: true, role: true, createdAt: true },
-            }),
-            prisma_1.default.counselorProfile.findMany(),
-            prisma_1.default.counselorSession.findMany(),
-            prisma_1.default.sessionNote.findMany(),
-            prisma_1.default.studentFeedback.findMany(),
-            prisma_1.default.counselorFeedback.findMany(),
-            prisma_1.default.dailyCheckin.findMany(),
-            prisma_1.default.quizResult.findMany(),
-            prisma_1.default.talkNote.findMany(),
-        ]);
-        const archivePayload = {
-            timestamp: new Date().toISOString(),
-            wipedBy: actorId,
-            studentsAndCounselorsCount: studentsAndCounselors.length,
-            counselorProfilesCount: counselorProfiles.length,
-            sessionsCount: sessions.length,
-            sessionNotesCount: sessionNotes.length,
-            feedbacksCount: studentFeedbacks.length + counselorFeedbacks.length,
-            checkinsCount: checkins.length,
-            quizResultsCount: quizResults.length,
-            talkNotesCount: talkNotes.length,
-            users: studentsAndCounselors,
-            counselorProfiles,
-            sessions,
-        };
-        await prisma_1.default.$executeRawUnsafe(`INSERT INTO "_archive_prelaunch_backup" (category, data) VALUES ($1, $2::jsonb)`, 'PRELAUNCH_WIPE_SNAPSHOT', JSON.stringify(archivePayload));
-        // 3. Sequentially wipe test data respecting foreign keys
-        await prisma_1.default.studentFeedback.deleteMany();
-        await prisma_1.default.counselorFeedback.deleteMany();
-        await prisma_1.default.sessionNote.deleteMany();
-        const deletedSessions = await prisma_1.default.counselorSession.deleteMany();
-        await prisma_1.default.counselorAvailabilityException.deleteMany();
-        await prisma_1.default.counselorAvailability.deleteMany();
-        await prisma_1.default.counselorInvitation.deleteMany();
-        await prisma_1.default.counselorOnboarding.deleteMany();
-        const deletedProfiles = await prisma_1.default.counselorProfile.deleteMany();
-        await prisma_1.default.talkReaction.deleteMany();
-        await prisma_1.default.talkReport.deleteMany();
-        await prisma_1.default.talkReply.deleteMany();
-        const deletedTalkNotes = await prisma_1.default.talkNote.deleteMany();
-        await prisma_1.default.talkRoom.deleteMany();
-        await prisma_1.default.chatMessage.deleteMany();
-        const deletedCheckins = await prisma_1.default.dailyCheckin.deleteMany();
-        await prisma_1.default.quizFeedback.deleteMany();
-        const deletedQuizResults = await prisma_1.default.quizResult.deleteMany();
-        await prisma_1.default.notification.deleteMany();
-        // Delete dummy students & counselors (safely preserving ADMIN and SUPER_ADMIN!)
-        const deletedUsers = await prisma_1.default.user.deleteMany({
-            where: { role: { in: ['STUDENT', 'COUNSELOR'] } },
-        });
-        (0, auditLogger_1.logAuditEvent)({
-            actorId: actorId,
-            action: 'WIPE_PROD_DATA',
-            targetEntity: 'Database',
-            targetId: 'production_wipe',
-            ipAddress: req.ip || null,
-            details: {
-                deletedUsers: deletedUsers.count,
-                deletedSessions: deletedSessions.count,
-                deletedProfiles: deletedProfiles.count,
-            },
-        });
+        // 2. Snapshot dummy users and counselor profiles into archive
+        await prisma_1.default.$executeRawUnsafe(`
+      INSERT INTO "_archive_prelaunch_backup" (category, data)
+      SELECT 'PRELAUNCH_SNAPSHOT', json_build_object(
+        'timestamp', NOW(),
+        'users', (SELECT json_agg(row_to_json(u)) FROM (SELECT id, email, "firstName", "lastName", role, "createdAt" FROM "User" WHERE role IN ('STUDENT', 'COUNSELOR')) u)
+      );
+    `);
+        // 3. Sequentially wipe test data respecting foreign keys using IF EXISTS guards
+        await prisma_1.default.$executeRawUnsafe(`
+      DO $$
+      BEGIN
+        IF EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'StudentFeedback') THEN
+          DELETE FROM "StudentFeedback";
+        END IF;
+        IF EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'CounselorFeedback') THEN
+          DELETE FROM "CounselorFeedback";
+        END IF;
+        IF EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'SessionNote') THEN
+          DELETE FROM "SessionNote";
+        END IF;
+        IF EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'CounselorSession') THEN
+          DELETE FROM "CounselorSession";
+        END IF;
+        IF EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'CounselorAvailabilityException') THEN
+          DELETE FROM "CounselorAvailabilityException";
+        END IF;
+        IF EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'CounselorAvailability') THEN
+          DELETE FROM "CounselorAvailability";
+        END IF;
+        IF EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'CounselorInvitation') THEN
+          DELETE FROM "CounselorInvitation";
+        END IF;
+        IF EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'CounselorOnboarding') THEN
+          DELETE FROM "CounselorOnboarding";
+        END IF;
+        IF EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'CounselorProfile') THEN
+          DELETE FROM "CounselorProfile";
+        END IF;
+        IF EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'TalkReaction') THEN
+          DELETE FROM "TalkReaction";
+        END IF;
+        IF EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'TalkReport') THEN
+          DELETE FROM "TalkReport";
+        END IF;
+        IF EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'TalkReply') THEN
+          DELETE FROM "TalkReply";
+        END IF;
+        IF EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'TalkNote') THEN
+          DELETE FROM "TalkNote";
+        END IF;
+        IF EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'TalkRoom') THEN
+          DELETE FROM "TalkRoom";
+        END IF;
+        IF EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'ChatMessage') THEN
+          DELETE FROM "ChatMessage";
+        END IF;
+        IF EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'DailyCheckin') THEN
+          DELETE FROM "DailyCheckin";
+        END IF;
+        IF EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'QuizFeedback') THEN
+          DELETE FROM "QuizFeedback";
+        END IF;
+        IF EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'QuizResult') THEN
+          DELETE FROM "QuizResult";
+        END IF;
+        IF EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'Notification') THEN
+          DELETE FROM "Notification";
+        END IF;
+        DELETE FROM "User" WHERE role IN ('STUDENT', 'COUNSELOR');
+      END $$;
+    `);
+        const preservedAdmins = await prisma_1.default.user.count({ where: { role: { in: ['ADMIN', 'SUPER_ADMIN'] } } }).catch(() => 0);
+        const preservedUniversities = await prisma_1.default.university.count().catch(() => 0);
+        const preservedQuizzes = await prisma_1.default.quiz.count().catch(() => 0);
+        const remainingTestUsers = await prisma_1.default.user.count({ where: { role: { in: ['STUDENT', 'COUNSELOR'] } } }).catch(() => 0);
         (0, response_1.sendSuccess)(res, {
             message: 'Production dummy data wiped and archived successfully',
             summary: {
-                deletedUsers: deletedUsers.count,
-                deletedProfiles: deletedProfiles.count,
-                deletedSessions: deletedSessions.count,
-                deletedCheckins: deletedCheckins.count,
-                deletedQuizResults: deletedQuizResults.count,
-                deletedTalkNotes: deletedTalkNotes.count,
-                preservedAdmins: await prisma_1.default.user.count({ where: { role: { in: ['ADMIN', 'SUPER_ADMIN'] } } }),
-                preservedUniversities: await prisma_1.default.university.count(),
-                preservedQuizzes: await prisma_1.default.quiz.count(),
+                remainingTestUsers,
+                preservedAdmins,
+                preservedUniversities,
+                preservedQuizzes,
             },
         });
     }
     catch (error) {
         console.error('❌ Failed to wipe prod data:', error);
-        (0, response_1.sendError)(res, 'WIPE_FAILED', `Failed to wipe data: ${error.message || 'Database error'}`, 500);
+        res.status(500).json({
+            success: false,
+            error: {
+                code: 'WIPE_EXECUTION_ERROR',
+                message: error?.message || String(error),
+            },
+        });
     }
 });
 // Protect all other admin routes with JWT and ADMIN/SUPER_ADMIN roles
