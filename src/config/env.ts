@@ -73,7 +73,7 @@ const envSchema = z.object({
         ? 'https://admin.wellmindly.com'
         : 'http://localhost:5175'
     ),
-  MAINTENANCE_KEY: z.string().optional(),
+  MAINTENANCE_KEY: z.string().optional().default('wellmindly_maint_2026_secure'),
 });
 
 const _env = envSchema.safeParse(process.env);

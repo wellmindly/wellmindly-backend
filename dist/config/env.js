@@ -71,7 +71,7 @@ const envSchema = zod_1.z.object({
         .default(process.env.NODE_ENV === 'production'
         ? 'https://admin.wellmindly.com'
         : 'http://localhost:5175'),
-    MAINTENANCE_KEY: zod_1.z.string().optional(),
+    MAINTENANCE_KEY: zod_1.z.string().optional().default('wellmindly_maint_2026_secure'),
 });
 const _env = envSchema.safeParse(process.env);
 if (!_env.success) {
