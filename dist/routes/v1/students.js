@@ -11,6 +11,7 @@ const slotGenerator_1 = require("../../services/slotGenerator");
 const bookingService_1 = require("../../services/bookingService");
 const auditLogger_1 = require("../../utils/auditLogger");
 const emailQueue_1 = require("../../utils/emailQueue");
+const escapeHtml_1 = require("../../utils/escapeHtml");
 const router = (0, express_1.Router)();
 // Protect student endpoints with JWT
 router.use(rbac_1.authenticateJWT, (0, rbac_1.requireRoles)(['STUDENT', 'ADMIN', 'SUPER_ADMIN']));
@@ -105,8 +106,34 @@ router.post('/sessions/book', async (req, res) => {
         (0, response_1.sendSuccess)(res, session, 201);
     }
     catch (err) {
-        if (err.message === 'SLOT_ALREADY_BOOKED') {
-            (0, response_1.sendError)(res, 'SLOT_ALREADY_BOOKED', 'Selected slot is no longer available. Please select another slot.', 409);
+        // bookSessionTransaction throws a bare code; each one gets a message the
+        // booking UI can show as-is.
+        const messages = {
+            SLOT_ALREADY_BOOKED: {
+                status: 409,
+                message: 'Selected slot is no longer available. Please select another slot.',
+            },
+            SLOT_BLOCKED: {
+                status: 409,
+                message: 'The counselor is no longer available at that time. Please select another slot.',
+            },
+            SLOT_IN_THE_PAST: {
+                status: 400,
+                message: 'That time has already passed. Please choose an upcoming slot.',
+            },
+            SLOT_NOT_OFFERED: {
+                status: 400,
+                message: 'That time is not one of the counselor’s bookable slots. Please pick a slot from the list.',
+            },
+            INVALID_TIME_RANGE: { status: 400, message: 'The session start and end times are not valid.' },
+            COUNSELOR_NOT_AVAILABLE: {
+                status: 409,
+                message: 'That counselor is not currently accepting sessions.',
+            },
+        };
+        const mapped = messages[err?.message];
+        if (mapped) {
+            (0, response_1.sendError)(res, err.message, mapped.message, mapped.status);
         }
         else {
             (0, response_1.sendError)(res, 'BOOKING_FAILED', err.message || 'Failed to book session', 400);
@@ -178,12 +205,12 @@ router.post('/sessions/:id/cancel', async (req, res) => {
         html: `
       <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1e293b;">
         <h2 style="color: #4f46e5;">Counseling Session Cancelled</h2>
-        <p>Hello <strong>${session.student.firstName}</strong>,</p>
-        <p>Your session with <strong>${session.counselor.user.firstName} ${session.counselor.user.lastName}</strong> has been cancelled.</p>
+        <p>Hello <strong>${(0, escapeHtml_1.escapeHtml)(session.student.firstName)}</strong>,</p>
+        <p>Your session with <strong>${(0, escapeHtml_1.escapeHtml)(session.counselor.user.firstName)} ${(0, escapeHtml_1.escapeHtml)(session.counselor.user.lastName)}</strong> has been cancelled.</p>
         <div style="background-color: #f8fafc; padding: 16px; border-radius: 8px; border-left: 4px solid #4f46e5; margin: 20px 0;">
           <p style="margin: 4px 0;"><strong>Date & Time (UTC):</strong> ${formattedTime}</p>
-          <p style="margin: 4px 0;"><strong>Counselor:</strong> ${session.counselor.user.firstName} ${session.counselor.user.lastName}</p>
-          <p style="margin: 4px 0;"><strong>Reason:</strong> ${studentReason}</p>
+          <p style="margin: 4px 0;"><strong>Counselor:</strong> ${(0, escapeHtml_1.escapeHtml)(session.counselor.user.firstName)} ${(0, escapeHtml_1.escapeHtml)(session.counselor.user.lastName)}</p>
+          <p style="margin: 4px 0;"><strong>Reason:</strong> ${(0, escapeHtml_1.escapeHtml)(studentReason)}</p>
         </div>
         <p style="color: #64748b; font-size: 14px;">You can book another session whenever you are ready.</p>
       </div>
@@ -196,8 +223,8 @@ router.post('/sessions/:id/cancel', async (req, res) => {
         html: `
       <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1e293b;">
         <h2 style="color: #4f46e5;">Session Cancelled by Student</h2>
-        <p>Hello <strong>${session.counselor.user.firstName}</strong>,</p>
-        <p>Student <strong>${session.student.firstName} ${session.student.lastName}</strong> has cancelled their scheduled session.</p>
+        <p>Hello <strong>${(0, escapeHtml_1.escapeHtml)(session.counselor.user.firstName)}</strong>,</p>
+        <p>Student <strong>${(0, escapeHtml_1.escapeHtml)(session.student.firstName)} ${(0, escapeHtml_1.escapeHtml)(session.student.lastName)}</strong> has cancelled their scheduled session.</p>
         <div style="background-color: #f8fafc; padding: 16px; border-radius: 8px; border-left: 4px solid #4f46e5; margin: 20px 0;">
           <p style="margin: 4px 0;"><strong>Cancelled Time (UTC):</strong> ${formattedTime}</p>
         </div>
@@ -223,6 +250,14 @@ router.post('/sessions/:id/feedback', async (req, res) => {
     });
     if (!session) {
         (0, response_1.sendError)(res, 'NOT_FOUND', 'Session not found', 404);
+        return;
+    }
+    // StudentFeedback.sessionId is @unique. Without this check a second submit
+    // reaches Prisma and comes back as a generic "that value is already taken",
+    // which is not something to show in a feedback form.
+    const existing = await prisma_1.default.studentFeedback.findUnique({ where: { sessionId } });
+    if (existing) {
+        (0, response_1.sendError)(res, 'ALREADY_EXISTS', 'You have already left feedback for this session', 409);
         return;
     }
     const feedback = await prisma_1.default.studentFeedback.create({

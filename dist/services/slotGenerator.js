@@ -70,14 +70,19 @@ async function generateBookableSlots(counselorId, startDateUtc, endDateUtc) {
         },
     });
     return candidateSlots.map((slot) => {
+        // A slot that has already started is not bookable. Without this the "Today"
+        // tab keeps offering this morning's hours all afternoon, and they book.
+        const isPast = slot.start.getTime() <= Date.now();
         const isBlocked = exceptions.some((exc) => slot.start < exc.endDate && slot.end > exc.startDate);
         const isBooked = existingSessions.some((sess) => slot.start < sess.endTime && slot.end > sess.startTime);
-        const isAvailable = !isBlocked && !isBooked;
+        const isAvailable = !isPast && !isBlocked && !isBooked;
         let reason = undefined;
-        if (isBlocked)
-            reason = 'BLOCKED_BY_COUNSELOR';
-        else if (isBooked)
+        if (isBooked)
             reason = 'SLOT_ALREADY_BOOKED';
+        else if (isBlocked)
+            reason = 'BLOCKED_BY_COUNSELOR';
+        else if (isPast)
+            reason = 'SLOT_IN_THE_PAST';
         return {
             startTime: slot.start.toISOString(),
             endTime: slot.end.toISOString(),

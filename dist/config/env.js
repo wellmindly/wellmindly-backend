@@ -22,8 +22,23 @@ const envSchema = zod_1.z.object({
     RESEND_API_KEY: zod_1.z.string().optional(),
     GEMINI_API_KEY: zod_1.z.string().optional(),
     GEMINI_MODEL: zod_1.z.string().optional().default('gemini-3.5-flash'),
-    ALLOWED_ORIGINS: zod_1.z.string().optional().default('http://localhost:5173,http://localhost:5174,http://localhost:5175,https://wellmindly.com,https://admin.wellmindly.com,https://counselor.wellmindly.com,https://university.wellmindly.com,https://www.wellmindly.com,http://localhost,capacitor://localhost'),
+    // 5173 student, 5174 counselor, 5175 auraflow, 5176 university. Kept in step
+    // with each repo's vite.config so a fresh checkout with no .env can still
+    // reach the API from every local portal.
+    ALLOWED_ORIGINS: zod_1.z.string().optional().default('http://localhost:5173,http://localhost:5174,http://localhost:5175,http://localhost:5176,https://wellmindly.com,https://admin.wellmindly.com,https://counselor.wellmindly.com,https://university.wellmindly.com,https://www.wellmindly.com,http://localhost,capacitor://localhost'),
     CHAT_SESSION_MAX_REQUESTS: zod_1.z.coerce.number().default(100),
+    // Requests per IP per 15 minutes against /api. Configurable only so a local
+    // sanity sweep can hammer every route in one pass; deployed hosts should not
+    // set it and keep the 100 default.
+    RATE_LIMIT_MAX: zod_1.z.coerce.number().default(100),
+    // Requests per IP per minute against /api/auth/login, /register and
+    // /forgot-password. This was hardcoded at 5, which is too tight for the way
+    // the product is actually deployed: a university NATs its whole campus behind
+    // one public IP, so the sixth student to sign in within a minute was locked
+    // out for reasons that had nothing to do with them. bcrypt already makes each
+    // attempt expensive server-side, so 20/minute still leaves credential
+    // stuffing hopeless while letting a shared IP behave normally.
+    AUTH_RATE_LIMIT_MAX: zod_1.z.coerce.number().default(20),
     // Set to 'false' on a developer machine so a local boot never mails real
     // students and counselors. Absent means on, so deployed behaviour is unchanged.
     ENABLE_REMINDER_SCHEDULER: zod_1.z

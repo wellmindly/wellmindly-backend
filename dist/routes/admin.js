@@ -121,12 +121,21 @@ router.get('/metrics', jwt_1.authenticateJWT, (0, jwt_1.authorizeRoles)('ADMIN')
         const uniqueUsers = await prisma_1.default.quizResult.groupBy({
             by: ['userId'],
         });
+        // 6. Daily check-in mood, for the "Avg Daily Mood" tile on the admin overview.
+        // The tile previously hardcoded a value because nothing here exposed one.
+        // _avg is null when there are no rows, so the client must handle null.
+        const mood = await prisma_1.default.dailyCheckin.aggregate({
+            _avg: { rating: true },
+            _count: { id: true },
+        });
         res.status(200).json({
             totalSubmissions,
             totalUniqueUsers: uniqueUsers.length,
             classificationMetrics,
             quizMetrics,
             submissionTrend,
+            avgDailyMood: mood._avg.rating,
+            totalCheckins: mood._count.id,
         });
     }
     catch (error) {
@@ -141,7 +150,10 @@ router.get('/metrics', jwt_1.authenticateJWT, (0, jwt_1.authorizeRoles)('ADMIN')
 router.get('/students', jwt_1.authenticateJWT, (0, jwt_1.authorizeRoles)('ADMIN'), async (_req, res) => {
     try {
         const students = await prisma_1.default.user.findMany({
-            where: { role: 'STUDENT' },
+            // The v1 analytics endpoint counts students with `deletedAt: null`, so
+            // without the same filter here the admin list is longer than the
+            // headline figure sitting above it.
+            where: { role: 'STUDENT', deletedAt: null },
             select: {
                 id: true,
                 email: true,
@@ -172,7 +184,7 @@ router.get('/students/:id', jwt_1.authenticateJWT, (0, jwt_1.authorizeRoles)('AD
     try {
         const studentId = req.params.id;
         const student = await prisma_1.default.user.findFirst({
-            where: { id: studentId, role: 'STUDENT' },
+            where: { id: studentId, role: 'STUDENT', deletedAt: null },
             include: {
                 university: {
                     select: {

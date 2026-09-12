@@ -12,6 +12,7 @@ const response_1 = require("../../utils/response");
 const emailQueue_1 = require("../../utils/emailQueue");
 const auditLogger_1 = require("../../utils/auditLogger");
 const s3_1 = require("../../utils/s3");
+const escapeHtml_1 = require("../../utils/escapeHtml");
 const router = (0, express_1.Router)();
 /**
  * POST /api/v1/counselors/verify-invite
@@ -427,6 +428,13 @@ router.post('/me/sessions/:id/notes', async (req, res) => {
         (0, response_1.sendError)(res, 'NOT_FOUND', 'Session or profile not found', 404);
         return;
     }
+    // A note may only be written against the counselor's own session. Without this
+    // check any counselor could write into another counselor's clinical record,
+    // and the note would then surface in their own student timeline view.
+    if (session.counselorId !== profile.id) {
+        (0, response_1.sendError)(res, 'NOT_FOUND', 'Session not found', 404);
+        return;
+    }
     const note = await prisma_1.default.sessionNote.create({
         data: {
             sessionId,
@@ -458,8 +466,14 @@ router.get('/me/students/:studentId/timeline', async (req, res) => {
         return;
     }
     const [student, sessions, notes] = await Promise.all([
-        prisma_1.default.user.findUnique({
-            where: { id: studentId },
+        // Scoped to a student this counselor actually has a session or a note with.
+        // A plain findUnique on studentId turned this route into a lookup for any
+        // user's name and email by uuid.
+        prisma_1.default.user.findFirst({
+            where: {
+                id: studentId,
+                studentSessions: { some: { counselorId: profile.id, deletedAt: null } },
+            },
             select: { id: true, firstName: true, lastName: true, email: true },
         }),
         prisma_1.default.counselorSession.findMany({
@@ -485,7 +499,21 @@ router.post('/me/students/:studentId/send-email', async (req, res) => {
         (0, response_1.sendError)(res, 'INVALID_INPUT', 'Subject and message are required', 400);
         return;
     }
-    const student = await prisma_1.default.user.findUnique({ where: { id: studentId } });
+    const profile = await prisma_1.default.counselorProfile.findUnique({ where: { userId: req.user?.sub } });
+    if (!profile) {
+        (0, response_1.sendError)(res, 'NOT_FOUND', 'Profile not found', 404);
+        return;
+    }
+    // Same scoping rule as the timeline route above. A plain findUnique on the id
+    // let any counselor send a WellMindly-branded "message from your counselor" to
+    // any user in the database - students they have never met, other counselors,
+    // admins - as long as they knew a uuid.
+    const student = await prisma_1.default.user.findFirst({
+        where: {
+            id: studentId,
+            studentSessions: { some: { counselorId: profile.id, deletedAt: null } },
+        },
+    });
     if (!student) {
         (0, response_1.sendError)(res, 'NOT_FOUND', 'Student not found', 404);
         return;
@@ -496,9 +524,9 @@ router.post('/me/students/:studentId/send-email', async (req, res) => {
         html: `
       <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1e293b;">
         <h3 style="color: #4f46e5;">Message from WellMindly Counselor</h3>
-        <p>Hello ${student.firstName},</p>
-        <div style="background-color: #f8fafc; padding: 16px; border-radius: 8px; margin: 16px 0;">
-          ${message}
+        <p>Hello ${(0, escapeHtml_1.escapeHtml)(student.firstName)},</p>
+        <div style="background-color: #f8fafc; padding: 16px; border-radius: 8px; margin: 16px 0; white-space: pre-wrap;">
+          ${(0, escapeHtml_1.escapeHtml)(message)}
         </div>
       </div>
     `,
@@ -523,6 +551,26 @@ router.post('/me/sessions/:id/feedback', async (req, res) => {
     const session = await prisma_1.default.counselorSession.findUnique({ where: { id: sessionId } });
     if (!profile || !session) {
         (0, response_1.sendError)(res, 'NOT_FOUND', 'Session or profile not found', 404);
+        return;
+    }
+    // Same ownership rule as the notes endpoint above.
+    if (session.counselorId !== profile.id) {
+        (0, response_1.sendError)(res, 'NOT_FOUND', 'Session not found', 404);
+        return;
+    }
+    // The student-facing feedback endpoint already validates this range; the
+    // counselor side used to coerce with `rating || 5`, which turned a 0 into a 5
+    // and let 99 through into the average the admin dashboard displays.
+    if (rating !== undefined && (!Number.isInteger(rating) || rating < 1 || rating > 5)) {
+        (0, response_1.sendError)(res, 'INVALID_INPUT', 'Rating must be an integer between 1 and 5', 400);
+        return;
+    }
+    // CounselorFeedback.sessionId is @unique, so a second submit for the same
+    // session used to escape as an unhandled Prisma error - which Express served
+    // as an HTML stack trace containing absolute file paths.
+    const existing = await prisma_1.default.counselorFeedback.findUnique({ where: { sessionId } });
+    if (existing) {
+        (0, response_1.sendError)(res, 'ALREADY_EXISTS', 'Feedback has already been submitted for this session', 409);
         return;
     }
     const feedback = await prisma_1.default.counselorFeedback.create({

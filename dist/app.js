@@ -47,14 +47,14 @@ app.use(express_1.default.json());
 // API rate limiting
 const generalLimiter = (0, express_rate_limit_1.default)({
     windowMs: 15 * 60 * 1000,
-    max: 100,
+    max: env_1.env.RATE_LIMIT_MAX,
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: 'Too many requests from this IP, please try again after 15 minutes' },
 });
 const strictAuthLimiter = (0, express_rate_limit_1.default)({
     windowMs: 60 * 1000,
-    max: 5,
+    max: env_1.env.AUTH_RATE_LIMIT_MAX,
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: 'Too many authentication attempts, please try again after a minute' },
@@ -79,6 +79,35 @@ app.use('/api/v1/counselors', counselors_1.default);
 app.use('/api/v1/students', students_2.default);
 app.get('/health', (req, res) => {
     res.status(200).json({ status: 'ok', message: 'API is healthy' });
+});
+// Unmatched routes. Express's default answer is an HTML page, so a client that
+// calls a path this build does not have gets `<!DOCTYPE ...` where it expected
+// JSON and throws inside res.json() rather than reading the status. Only /api is
+// claimed here; anything else is left to Express.
+app.use('/api', (req, res) => {
+    res.status(404).json({
+        success: false,
+        error: { code: 'NOT_FOUND', message: `No such endpoint: ${req.method} ${req.baseUrl}${req.path}` },
+    });
+});
+// Last-resort error handler. Express's own handler answers with an HTML page
+// containing the stack trace and absolute file paths, which is not something a
+// client should ever be shown; anything that escapes a route lands here instead
+// and gets the same JSON envelope the rest of the API uses.
+app.use((err, _req, res, _next) => {
+    const code = err?.code;
+    // Prisma's known request errors carry a code we can map to a real status.
+    const mapped = code === 'P2025' ? { status: 404, code: 'NOT_FOUND', message: 'Record not found' } :
+        code === 'P2002' ? { status: 409, code: 'ALREADY_EXISTS', message: 'That value is already taken' } :
+            code === 'P2003' ? { status: 409, code: 'IN_USE', message: 'That record is still referenced elsewhere' } :
+                null;
+    if (!mapped)
+        console.error('Unhandled route error:', err);
+    const body = mapped ?? { status: 500, code: 'INTERNAL_ERROR', message: 'Something went wrong' };
+    res.status(body.status).json({
+        success: false,
+        error: { code: body.code, message: body.message },
+    });
 });
 // Start background automated session reminder scheduler
 if (env_1.env.ENABLE_REMINDER_SCHEDULER) {

@@ -10,6 +10,7 @@ const prisma_1 = __importDefault(require("../lib/prisma"));
 const jwt_1 = require("../utils/jwt");
 const mailer_1 = require("../utils/mailer");
 const emailQueue_1 = require("../utils/emailQueue");
+const escapeHtml_1 = require("../utils/escapeHtml");
 const env_1 = require("../config/env");
 const router = (0, express_1.Router)();
 const generalContactSchema = zod_1.z.object({
@@ -46,8 +47,8 @@ router.post('/general', async (req, res) => {
             html: `
         <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1e293b;">
           <h2 style="color: #4f46e5;">Message Received</h2>
-          <p>Hello <strong>${data.name}</strong>,</p>
-          <p>Thank you for reaching out to WellMindly. We have received your message regarding <strong>${data.subject || 'General Inquiry'}</strong> and a member of our team will review it.</p>
+          <p>Hello <strong>${(0, escapeHtml_1.escapeHtml)(data.name)}</strong>,</p>
+          <p>Thank you for reaching out to WellMindly. We have received your message regarding <strong>${(0, escapeHtml_1.escapeHtml)(data.subject || 'General Inquiry')}</strong> and a member of our team will review it.</p>
           <p style="color: #64748b; font-size: 14px; margin-top: 20px;">WellMindly Student Support Team</p>
         </div>
       `,
@@ -59,10 +60,10 @@ router.post('/general', async (req, res) => {
             html: `
         <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1e293b;">
           <h2 style="color: #4f46e5;">New Contact Request</h2>
-          <p><strong>From:</strong> ${data.name} (${data.email})</p>
-          <p><strong>Subject:</strong> ${data.subject || 'N/A'}</p>
+          <p><strong>From:</strong> ${(0, escapeHtml_1.escapeHtml)(data.name)} (${(0, escapeHtml_1.escapeHtml)(data.email)})</p>
+          <p><strong>Subject:</strong> ${(0, escapeHtml_1.escapeHtml)(data.subject || 'N/A')}</p>
           <div style="background-color: #f8fafc; padding: 16px; border-radius: 8px; border-left: 4px solid #4f46e5; margin: 16px 0;">
-            <p style="white-space: pre-wrap; margin: 0;">${data.message}</p>
+            <p style="white-space: pre-wrap; margin: 0;">${(0, escapeHtml_1.escapeHtml)(data.message)}</p>
           </div>
         </div>
       `,
@@ -89,8 +90,8 @@ router.post('/university', async (req, res) => {
             html: `
         <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1e293b;">
           <h2 style="color: #4f46e5;">University Onboarding Request Received</h2>
-          <p>Hello <strong>${data.name}</strong>,</p>
-          <p>Thank you for your interest in bringing WellMindly to <strong>${data.universityName}</strong>. Our partnerships team has received your request and will review your institution's details.</p>
+          <p>Hello <strong>${(0, escapeHtml_1.escapeHtml)(data.name)}</strong>,</p>
+          <p>Thank you for your interest in bringing WellMindly to <strong>${(0, escapeHtml_1.escapeHtml)(data.universityName)}</strong>. Our partnerships team has received your request and will review your institution's details.</p>
           <p style="color: #64748b; font-size: 14px; margin-top: 20px;">WellMindly University Partnerships</p>
         </div>
       `,
@@ -102,12 +103,12 @@ router.post('/university', async (req, res) => {
             html: `
         <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1e293b;">
           <h2 style="color: #4f46e5;">New University Onboarding Request</h2>
-          <p><strong>Contact:</strong> ${data.name} (${data.email})</p>
-          <p><strong>University:</strong> ${data.universityName}</p>
-          <p><strong>Role:</strong> ${data.role}</p>
-          <p><strong>Phone:</strong> ${data.phone || 'N/A'}</p>
+          <p><strong>Contact:</strong> ${(0, escapeHtml_1.escapeHtml)(data.name)} (${(0, escapeHtml_1.escapeHtml)(data.email)})</p>
+          <p><strong>University:</strong> ${(0, escapeHtml_1.escapeHtml)(data.universityName)}</p>
+          <p><strong>Role:</strong> ${(0, escapeHtml_1.escapeHtml)(data.role)}</p>
+          <p><strong>Phone:</strong> ${(0, escapeHtml_1.escapeHtml)(data.phone || 'N/A')}</p>
           <div style="background-color: #f8fafc; padding: 16px; border-radius: 8px; border-left: 4px solid #4f46e5; margin: 16px 0;">
-            <p style="white-space: pre-wrap; margin: 0;">${data.message}</p>
+            <p style="white-space: pre-wrap; margin: 0;">${(0, escapeHtml_1.escapeHtml)(data.message)}</p>
           </div>
         </div>
       `,
@@ -134,8 +135,8 @@ router.post('/counselor', async (req, res) => {
             html: `
         <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1e293b;">
           <h2 style="color: #4f46e5;">Counselor Application Received</h2>
-          <p>Hello <strong>${data.name}</strong>,</p>
-          <p>Thank you for applying to join the WellMindly counselor network. We have received your application with credentials (<strong>${data.credentials}</strong>) and our clinical review team will assess your submission.</p>
+          <p>Hello <strong>${(0, escapeHtml_1.escapeHtml)(data.name)}</strong>,</p>
+          <p>Thank you for applying to join the WellMindly counselor network. We have received your application with credentials (<strong>${(0, escapeHtml_1.escapeHtml)(data.credentials)}</strong>) and our clinical review team will assess your submission.</p>
           <p style="color: #64748b; font-size: 14px; margin-top: 20px;">WellMindly Clinical Operations</p>
         </div>
       `,
@@ -147,14 +148,14 @@ router.post('/counselor', async (req, res) => {
             html: `
         <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1e293b;">
           <h2 style="color: #4f46e5;">New Counselor Application</h2>
-          <p><strong>Applicant:</strong> ${data.name} (${data.email})</p>
-          <p><strong>Phone:</strong> ${data.phone || 'N/A'}</p>
-          <p><strong>Credentials:</strong> ${data.credentials}</p>
+          <p><strong>Applicant:</strong> ${(0, escapeHtml_1.escapeHtml)(data.name)} (${(0, escapeHtml_1.escapeHtml)(data.email)})</p>
+          <p><strong>Phone:</strong> ${(0, escapeHtml_1.escapeHtml)(data.phone || 'N/A')}</p>
+          <p><strong>Credentials:</strong> ${(0, escapeHtml_1.escapeHtml)(data.credentials)}</p>
           <div style="background-color: #f8fafc; padding: 16px; border-radius: 8px; border-left: 4px solid #4f46e5; margin: 16px 0;">
             <p><strong>Experience:</strong></p>
-            <p style="white-space: pre-wrap; margin: 0 0 12px 0;">${data.experience}</p>
+            <p style="white-space: pre-wrap; margin: 0 0 12px 0;">${(0, escapeHtml_1.escapeHtml)(data.experience)}</p>
             <p><strong>Message / Statement:</strong></p>
-            <p style="white-space: pre-wrap; margin: 0;">${data.message}</p>
+            <p style="white-space: pre-wrap; margin: 0;">${(0, escapeHtml_1.escapeHtml)(data.message)}</p>
           </div>
         </div>
       `,
@@ -273,6 +274,10 @@ router.delete('/general/:id', jwt_1.authenticateJWT, (0, jwt_1.authorizeRoles)('
         res.status(200).json({ success: true, message: 'Contact request deleted' });
     }
     catch (error) {
+        if (error?.code === 'P2025') {
+            res.status(404).json({ error: 'Contact request not found' });
+            return;
+        }
         console.error('Error deleting contact request:', error);
         res.status(500).json({ error: 'Failed to delete contact request' });
     }
@@ -284,6 +289,10 @@ router.delete('/university/:id', jwt_1.authenticateJWT, (0, jwt_1.authorizeRoles
         res.status(200).json({ success: true, message: 'University request deleted' });
     }
     catch (error) {
+        if (error?.code === 'P2025') {
+            res.status(404).json({ error: 'University request not found' });
+            return;
+        }
         console.error('Error deleting university request:', error);
         res.status(500).json({ error: 'Failed to delete university onboarding request' });
     }
@@ -295,6 +304,10 @@ router.delete('/counselor/:id', jwt_1.authenticateJWT, (0, jwt_1.authorizeRoles)
         res.status(200).json({ success: true, message: 'Counselor request deleted' });
     }
     catch (error) {
+        if (error?.code === 'P2025') {
+            res.status(404).json({ error: 'Counselor request not found' });
+            return;
+        }
         console.error('Error deleting counselor request:', error);
         res.status(500).json({ error: 'Failed to delete counselor onboarding request' });
     }
