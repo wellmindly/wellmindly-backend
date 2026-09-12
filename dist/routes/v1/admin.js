@@ -7,6 +7,7 @@ const express_1 = require("express");
 const crypto_1 = __importDefault(require("crypto"));
 const prisma_1 = __importDefault(require("../../lib/prisma"));
 const rbac_1 = require("../../middleware/rbac");
+const jwt_1 = require("../../lib/jwt");
 const response_1 = require("../../utils/response");
 const mailer_1 = require("../../utils/mailer");
 const emailQueue_1 = require("../../utils/emailQueue");
@@ -14,7 +15,140 @@ const auditLogger_1 = require("../../utils/auditLogger");
 const escapeHtml_1 = require("../../utils/escapeHtml");
 const env_1 = require("../../config/env");
 const router = (0, express_1.Router)();
-// Protect all admin routes with JWT and ADMIN/SUPER_ADMIN roles
+/**
+ * POST /api/v1/admin/maintenance/wipe-prod-data
+ * Archives and wipes dummy/test data (students, counselors, sessions, check-ins, talk rooms/notes)
+ * while safely preserving admin accounts, universities, quizzes, and hotlines.
+ * Accessible with x-maintenance-key header OR authenticated admin JWT.
+ */
+router.post('/maintenance/wipe-prod-data', async (req, res) => {
+    const maintenanceKey = req.headers['x-maintenance-key'];
+    let isAuthorized = false;
+    let actorId = null;
+    if (maintenanceKey && maintenanceKey === env_1.env.MAINTENANCE_KEY) {
+        isAuthorized = true;
+        actorId = 'MAINTENANCE_KEY';
+    }
+    else {
+        const authHeader = req.headers.authorization;
+        if (authHeader && authHeader.startsWith('Bearer ')) {
+            try {
+                const payload = (0, jwt_1.verifyToken)(authHeader.split(' ')[1]);
+                if (['ADMIN', 'SUPER_ADMIN'].includes(payload.role)) {
+                    isAuthorized = true;
+                    actorId = payload.sub;
+                }
+            }
+            catch (_) { }
+        }
+    }
+    if (!isAuthorized) {
+        (0, response_1.sendError)(res, 'UNAUTHORIZED', 'Missing or invalid maintenance key (x-maintenance-key header) or admin Bearer token', 401);
+        return;
+    }
+    const { confirm } = req.body;
+    if (confirm !== 'CONFIRM_WIPE_PROD_DATA') {
+        (0, response_1.sendError)(res, 'CONFIRMATION_REQUIRED', 'Confirmation keyword mismatch. Please pass { "confirm": "CONFIRM_WIPE_PROD_DATA" } in the request body to execute the wipe.', 400);
+        return;
+    }
+    try {
+        // 1. Ensure archival table exists
+        await prisma_1.default.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS "_archive_prelaunch_backup" (
+        id SERIAL PRIMARY KEY,
+        category TEXT NOT NULL,
+        data JSONB NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+        // 2. Fetch snapshot for archival
+        const [studentsAndCounselors, counselorProfiles, sessions, sessionNotes, studentFeedbacks, counselorFeedbacks, checkins, quizResults, talkNotes] = await Promise.all([
+            prisma_1.default.user.findMany({
+                where: { role: { in: ['STUDENT', 'COUNSELOR'] } },
+                select: { id: true, email: true, firstName: true, lastName: true, role: true, createdAt: true },
+            }),
+            prisma_1.default.counselorProfile.findMany(),
+            prisma_1.default.counselorSession.findMany(),
+            prisma_1.default.sessionNote.findMany(),
+            prisma_1.default.studentFeedback.findMany(),
+            prisma_1.default.counselorFeedback.findMany(),
+            prisma_1.default.dailyCheckin.findMany(),
+            prisma_1.default.quizResult.findMany(),
+            prisma_1.default.talkNote.findMany(),
+        ]);
+        const archivePayload = {
+            timestamp: new Date().toISOString(),
+            wipedBy: actorId,
+            studentsAndCounselorsCount: studentsAndCounselors.length,
+            counselorProfilesCount: counselorProfiles.length,
+            sessionsCount: sessions.length,
+            sessionNotesCount: sessionNotes.length,
+            feedbacksCount: studentFeedbacks.length + counselorFeedbacks.length,
+            checkinsCount: checkins.length,
+            quizResultsCount: quizResults.length,
+            talkNotesCount: talkNotes.length,
+            users: studentsAndCounselors,
+            counselorProfiles,
+            sessions,
+        };
+        await prisma_1.default.$executeRawUnsafe(`INSERT INTO "_archive_prelaunch_backup" (category, data) VALUES ($1, $2::jsonb)`, 'PRELAUNCH_WIPE_SNAPSHOT', JSON.stringify(archivePayload));
+        // 3. Sequentially wipe test data respecting foreign keys
+        await prisma_1.default.studentFeedback.deleteMany();
+        await prisma_1.default.counselorFeedback.deleteMany();
+        await prisma_1.default.sessionNote.deleteMany();
+        const deletedSessions = await prisma_1.default.counselorSession.deleteMany();
+        await prisma_1.default.counselorAvailabilityException.deleteMany();
+        await prisma_1.default.counselorAvailability.deleteMany();
+        await prisma_1.default.counselorInvitation.deleteMany();
+        await prisma_1.default.counselorOnboarding.deleteMany();
+        const deletedProfiles = await prisma_1.default.counselorProfile.deleteMany();
+        await prisma_1.default.talkReaction.deleteMany();
+        await prisma_1.default.talkReport.deleteMany();
+        await prisma_1.default.talkReply.deleteMany();
+        const deletedTalkNotes = await prisma_1.default.talkNote.deleteMany();
+        await prisma_1.default.talkRoom.deleteMany();
+        await prisma_1.default.chatMessage.deleteMany();
+        const deletedCheckins = await prisma_1.default.dailyCheckin.deleteMany();
+        await prisma_1.default.quizFeedback.deleteMany();
+        const deletedQuizResults = await prisma_1.default.quizResult.deleteMany();
+        await prisma_1.default.notification.deleteMany();
+        // Delete dummy students & counselors (safely preserving ADMIN and SUPER_ADMIN!)
+        const deletedUsers = await prisma_1.default.user.deleteMany({
+            where: { role: { in: ['STUDENT', 'COUNSELOR'] } },
+        });
+        (0, auditLogger_1.logAuditEvent)({
+            actorId: actorId,
+            action: 'WIPE_PROD_DATA',
+            targetEntity: 'Database',
+            targetId: 'production_wipe',
+            ipAddress: req.ip || null,
+            details: {
+                deletedUsers: deletedUsers.count,
+                deletedSessions: deletedSessions.count,
+                deletedProfiles: deletedProfiles.count,
+            },
+        });
+        (0, response_1.sendSuccess)(res, {
+            message: 'Production dummy data wiped and archived successfully',
+            summary: {
+                deletedUsers: deletedUsers.count,
+                deletedProfiles: deletedProfiles.count,
+                deletedSessions: deletedSessions.count,
+                deletedCheckins: deletedCheckins.count,
+                deletedQuizResults: deletedQuizResults.count,
+                deletedTalkNotes: deletedTalkNotes.count,
+                preservedAdmins: await prisma_1.default.user.count({ where: { role: { in: ['ADMIN', 'SUPER_ADMIN'] } } }),
+                preservedUniversities: await prisma_1.default.university.count(),
+                preservedQuizzes: await prisma_1.default.quiz.count(),
+            },
+        });
+    }
+    catch (error) {
+        console.error('❌ Failed to wipe prod data:', error);
+        (0, response_1.sendError)(res, 'WIPE_FAILED', `Failed to wipe data: ${error.message || 'Database error'}`, 500);
+    }
+});
+// Protect all other admin routes with JWT and ADMIN/SUPER_ADMIN roles
 router.use(rbac_1.authenticateJWT, (0, rbac_1.requireRoles)(['ADMIN', 'SUPER_ADMIN']));
 /**
  * POST /api/v1/admin/counselors/invite
@@ -454,113 +588,5 @@ router.get('/audit-logs', async (req, res) => {
         take: 100,
     });
     (0, response_1.sendSuccess)(res, logs);
-});
-/**
- * POST /api/v1/admin/maintenance/wipe-prod-data
- * Archives and wipes dummy/test data (students, counselors, sessions, check-ins, talk rooms/notes)
- * while safely preserving admin accounts, universities, quizzes, and hotlines.
- */
-router.post('/maintenance/wipe-prod-data', async (req, res) => {
-    const { confirm } = req.body;
-    if (confirm !== 'CONFIRM_WIPE_PROD_DATA') {
-        (0, response_1.sendError)(res, 'CONFIRMATION_REQUIRED', 'Confirmation keyword mismatch. Please pass { "confirm": "CONFIRM_WIPE_PROD_DATA" } in the request body to execute the wipe.', 400);
-        return;
-    }
-    try {
-        // 1. Ensure archival table exists
-        await prisma_1.default.$executeRawUnsafe(`
-      CREATE TABLE IF NOT EXISTS "_archive_prelaunch_backup" (
-        id SERIAL PRIMARY KEY,
-        category TEXT NOT NULL,
-        data JSONB NOT NULL,
-        created_at TIMESTAMPTZ DEFAULT NOW()
-      );
-    `);
-        // 2. Fetch snapshot for archival
-        const [studentsAndCounselors, counselorProfiles, sessions, sessionNotes, studentFeedbacks, counselorFeedbacks, checkins, quizResults, talkNotes] = await Promise.all([
-            prisma_1.default.user.findMany({
-                where: { role: { in: ['STUDENT', 'COUNSELOR'] } },
-                select: { id: true, email: true, firstName: true, lastName: true, role: true, createdAt: true },
-            }),
-            prisma_1.default.counselorProfile.findMany(),
-            prisma_1.default.counselorSession.findMany(),
-            prisma_1.default.sessionNote.findMany(),
-            prisma_1.default.studentFeedback.findMany(),
-            prisma_1.default.counselorFeedback.findMany(),
-            prisma_1.default.dailyCheckin.findMany(),
-            prisma_1.default.quizResult.findMany(),
-            prisma_1.default.talkNote.findMany(),
-        ]);
-        const archivePayload = {
-            timestamp: new Date().toISOString(),
-            wipedBy: req.user?.sub,
-            studentsAndCounselorsCount: studentsAndCounselors.length,
-            counselorProfilesCount: counselorProfiles.length,
-            sessionsCount: sessions.length,
-            sessionNotesCount: sessionNotes.length,
-            feedbacksCount: studentFeedbacks.length + counselorFeedbacks.length,
-            checkinsCount: checkins.length,
-            quizResultsCount: quizResults.length,
-            talkNotesCount: talkNotes.length,
-            users: studentsAndCounselors,
-            counselorProfiles,
-            sessions,
-        };
-        await prisma_1.default.$executeRawUnsafe(`INSERT INTO "_archive_prelaunch_backup" (category, data) VALUES ($1, $2::jsonb)`, 'PRELAUNCH_WIPE_SNAPSHOT', JSON.stringify(archivePayload));
-        // 3. Sequentially wipe test data respecting foreign keys
-        await prisma_1.default.studentFeedback.deleteMany();
-        await prisma_1.default.counselorFeedback.deleteMany();
-        await prisma_1.default.sessionNote.deleteMany();
-        const deletedSessions = await prisma_1.default.counselorSession.deleteMany();
-        await prisma_1.default.counselorAvailabilityException.deleteMany();
-        await prisma_1.default.counselorAvailability.deleteMany();
-        await prisma_1.default.counselorInvitation.deleteMany();
-        await prisma_1.default.counselorOnboarding.deleteMany();
-        const deletedProfiles = await prisma_1.default.counselorProfile.deleteMany();
-        await prisma_1.default.talkReaction.deleteMany();
-        await prisma_1.default.talkReport.deleteMany();
-        await prisma_1.default.talkReply.deleteMany();
-        const deletedTalkNotes = await prisma_1.default.talkNote.deleteMany();
-        await prisma_1.default.talkRoom.deleteMany();
-        await prisma_1.default.chatMessage.deleteMany();
-        const deletedCheckins = await prisma_1.default.dailyCheckin.deleteMany();
-        await prisma_1.default.quizFeedback.deleteMany();
-        const deletedQuizResults = await prisma_1.default.quizResult.deleteMany();
-        await prisma_1.default.notification.deleteMany();
-        // Delete dummy students & counselors (safely preserving ADMIN and SUPER_ADMIN!)
-        const deletedUsers = await prisma_1.default.user.deleteMany({
-            where: { role: { in: ['STUDENT', 'COUNSELOR'] } },
-        });
-        (0, auditLogger_1.logAuditEvent)({
-            actorId: req.user?.sub,
-            action: 'WIPE_PROD_DATA',
-            targetEntity: 'Database',
-            targetId: 'production_wipe',
-            ipAddress: req.ip || null,
-            details: {
-                deletedUsers: deletedUsers.count,
-                deletedSessions: deletedSessions.count,
-                deletedProfiles: deletedProfiles.count,
-            },
-        });
-        (0, response_1.sendSuccess)(res, {
-            message: 'Production dummy data wiped and archived successfully',
-            summary: {
-                deletedUsers: deletedUsers.count,
-                deletedProfiles: deletedProfiles.count,
-                deletedSessions: deletedSessions.count,
-                deletedCheckins: deletedCheckins.count,
-                deletedQuizResults: deletedQuizResults.count,
-                deletedTalkNotes: deletedTalkNotes.count,
-                preservedAdmins: await prisma_1.default.user.count({ where: { role: { in: ['ADMIN', 'SUPER_ADMIN'] } } }),
-                preservedUniversities: await prisma_1.default.university.count(),
-                preservedQuizzes: await prisma_1.default.quiz.count(),
-            },
-        });
-    }
-    catch (error) {
-        console.error('❌ Failed to wipe prod data:', error);
-        (0, response_1.sendError)(res, 'WIPE_FAILED', `Failed to wipe data: ${error.message || 'Database error'}`, 500);
-    }
 });
 exports.default = router;
