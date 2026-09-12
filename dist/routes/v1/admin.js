@@ -198,8 +198,10 @@ router.post('/counselors/invite', async (req, res) => {
             expiresAt,
         },
     });
-    const counselorPortalBase = env_1.env.COUNSELOR_PORTAL_URL ||
-        (process.env.NODE_ENV === 'production' ? 'https://counselor.wellmindly.com' : 'http://localhost:5174');
+    const host = req.get('host') || '';
+    const origin = req.get('origin') || '';
+    const isLocalDev = (host.includes('localhost') || host.includes('127.0.0.1')) && !origin.includes('wellmindly.com');
+    const counselorPortalBase = isLocalDev ? (env_1.env.COUNSELOR_PORTAL_URL || 'http://localhost:5174') : 'https://counselor.wellmindly.com';
     const setupUrl = `${counselorPortalBase}/setup-profile?token=${token}`;
     await (0, mailer_1.sendEmail)({
         to: cleanEmail,

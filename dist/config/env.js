@@ -54,23 +54,17 @@ const envSchema = zod_1.z.object({
         .string()
         .url()
         .optional()
-        .default(process.env.NODE_ENV === 'production'
-        ? 'https://counselor.wellmindly.com'
-        : 'http://localhost:5174'),
+        .default('https://counselor.wellmindly.com'),
     STUDENT_PORTAL_URL: zod_1.z
         .string()
         .url()
         .optional()
-        .default(process.env.NODE_ENV === 'production'
-        ? 'https://wellmindly.com'
-        : 'http://localhost:5173'),
+        .default('https://wellmindly.com'),
     ADMIN_PORTAL_URL: zod_1.z
         .string()
         .url()
         .optional()
-        .default(process.env.NODE_ENV === 'production'
-        ? 'https://admin.wellmindly.com'
-        : 'http://localhost:5175'),
+        .default('https://admin.wellmindly.com'),
     MAINTENANCE_KEY: zod_1.z.string().optional().default('wellmindly_maint_2026_secure'),
 });
 const _env = envSchema.safeParse(process.env);
