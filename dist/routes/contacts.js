@@ -136,8 +136,8 @@ router.post('/counselor', async (req, res) => {
         <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1e293b;">
           <h2 style="color: #4f46e5;">Counselor Application Received</h2>
           <p>Hello <strong>${(0, escapeHtml_1.escapeHtml)(data.name)}</strong>,</p>
-          <p>Thank you for applying to join the WellMindly counselor network. We have received your application with credentials (<strong>${(0, escapeHtml_1.escapeHtml)(data.credentials)}</strong>) and our clinical review team will assess your submission.</p>
-          <p style="color: #64748b; font-size: 14px; margin-top: 20px;">WellMindly Clinical Operations</p>
+          <p>Thank you for applying to join the WellMindly counselor network. We have received your application with credentials (<strong>${(0, escapeHtml_1.escapeHtml)(data.credentials)}</strong>) and our counselor review team will assess your submission.</p>
+          <p style="color: #64748b; font-size: 14px; margin-top: 20px;">WellMindly Counselor Operations</p>
         </div>
       `,
         });
@@ -328,13 +328,13 @@ router.post('/counselor/:id/request-docs', jwt_1.authenticateJWT, (0, jwt_1.auth
           <p>Thank you for submitting your counselor onboarding application to WellMindly. We are reviewing your application credentials (<em>${application.credentials}</em>).</p>
           <p>To proceed with your application review and onboard you to our counselor network, please reply to this email with the following documents attached:</p>
           <ul style="padding-left: 20px; color: #334155;">
-            <li><strong>Degree & Professional Certificates</strong> (M.A., Ph.D., RBT, or clinical certifications)</li>
+            <li><strong>Degree & Professional Certificates</strong> (M.A., Ph.D., RBT, or professional certifications)</li>
             <li><strong>Government-issued Identity Document</strong> (Passport or ID)</li>
             <li><strong>Proof of Professional License / Practice Standing</strong></li>
             <li>Any additional background documentation or reference letters</li>
           </ul>
           <p>If you have any questions, feel free to reply directly to this message or contact our team at <a href="mailto:wellmindly@gmail.com" style="color: #4f46e5;">wellmindly@gmail.com</a>.</p>
-          <p style="margin-top: 24px; color: #64748b; font-size: 13px;">Warm regards,<br /><strong>The WellMindly Clinical Operations Team</strong></p>
+          <p style="margin-top: 24px; color: #64748b; font-size: 13px;">Warm regards,<br /><strong>The WellMindly Counselor Operations Team</strong></p>
         </div>
       `;
         await (0, mailer_1.sendEmail)({

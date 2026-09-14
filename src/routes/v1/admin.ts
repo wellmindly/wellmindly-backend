@@ -348,9 +348,10 @@ router.put('/counselors/:id/status', async (req: AuthenticatedRequest, res: Resp
 
 /**
  * GET /api/v1/admin/calendar
+ * GET /api/v1/admin/sessions
  * Master calendar filterable counselor-wise and student-wise
  */
-router.get('/calendar', async (req: AuthenticatedRequest, res: Response) => {
+const getMasterCalendar = async (req: AuthenticatedRequest, res: Response) => {
   const counselorId = typeof req.query.counselorId === 'string' ? req.query.counselorId : undefined;
   const studentId = typeof req.query.studentId === 'string' ? req.query.studentId : undefined;
   const startDate = typeof req.query.startDate === 'string' ? new Date(req.query.startDate) : undefined;
@@ -384,7 +385,10 @@ router.get('/calendar', async (req: AuthenticatedRequest, res: Response) => {
   });
 
   sendSuccess(res, sessions);
-});
+};
+
+router.get('/calendar', getMasterCalendar);
+router.get('/sessions', getMasterCalendar);
 
 /**
  * PUT /api/v1/admin/sessions/:id/cancel
