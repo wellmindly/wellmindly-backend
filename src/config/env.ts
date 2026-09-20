@@ -23,10 +23,10 @@ const envSchema = z.object({
   // reach the API from every local portal.
   ALLOWED_ORIGINS: z.string().optional().default('http://localhost:5173,http://localhost:5174,http://localhost:5175,http://localhost:5176,https://wellmindly.com,https://admin.wellmindly.com,https://counselor.wellmindly.com,https://university.wellmindly.com,https://www.wellmindly.com,http://localhost,capacitor://localhost'),
   CHAT_SESSION_MAX_REQUESTS: z.coerce.number().default(100),
-  // Requests per IP per 15 minutes against /api. Configurable only so a local
-  // sanity sweep can hammer every route in one pass; deployed hosts should not
-  // set it and keep the 100 default.
-  RATE_LIMIT_MAX: z.coerce.number().default(100),
+  // Requests per IP per 15 minutes against /api. Raised default from 100 to 10000
+  // to allow normal student and dashboard usage, including campus NAT environments
+  // where many students share a single egress IP. Set to 0 to disable.
+  RATE_LIMIT_MAX: z.coerce.number().default(10000),
   // Requests per IP per minute against /api/auth/login, /register and
   // /forgot-password. This was hardcoded at 5, which is too tight for the way
   // the product is actually deployed: a university NATs its whole campus behind

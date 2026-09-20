@@ -18,6 +18,10 @@ import { startReminderScheduler } from './utils/reminderService';
 
 const app = express();
 
+// Trust reverse proxies (CloudFront / ALB / Nginx) so req.ip and rate limiters
+// inspect X-Forwarded-For rather than treating all production traffic as 127.0.0.1
+app.set('trust proxy', true);
+
 // Secure security headers
 app.use(helmet());
 
@@ -53,6 +57,8 @@ const generalLimiter = rateLimit({
   max: env.RATE_LIMIT_MAX,
   standardHeaders: true,
   legacyHeaders: false,
+  validate: { trustProxy: false },
+  skip: () => env.RATE_LIMIT_MAX <= 0,
   message: { error: 'Too many requests from this IP, please try again after 15 minutes' },
 });
 
@@ -61,6 +67,8 @@ const strictAuthLimiter = rateLimit({
   max: env.AUTH_RATE_LIMIT_MAX,
   standardHeaders: true,
   legacyHeaders: false,
+  validate: { trustProxy: false },
+  skip: () => env.AUTH_RATE_LIMIT_MAX <= 0,
   message: { error: 'Too many authentication attempts, please try again after a minute' },
 });
 

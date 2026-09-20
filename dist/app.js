@@ -21,6 +21,9 @@ const counselors_1 = __importDefault(require("./routes/v1/counselors"));
 const students_2 = __importDefault(require("./routes/v1/students"));
 const reminderService_1 = require("./utils/reminderService");
 const app = (0, express_1.default)();
+// Trust reverse proxies (CloudFront / ALB / Nginx) so req.ip and rate limiters
+// inspect X-Forwarded-For rather than treating all production traffic as 127.0.0.1
+app.set('trust proxy', true);
 // Secure security headers
 app.use((0, helmet_1.default)());
 // Configure secure CORS policy checks
@@ -50,6 +53,8 @@ const generalLimiter = (0, express_rate_limit_1.default)({
     max: env_1.env.RATE_LIMIT_MAX,
     standardHeaders: true,
     legacyHeaders: false,
+    validate: { trustProxy: false },
+    skip: () => env_1.env.RATE_LIMIT_MAX <= 0,
     message: { error: 'Too many requests from this IP, please try again after 15 minutes' },
 });
 const strictAuthLimiter = (0, express_rate_limit_1.default)({
@@ -57,6 +62,8 @@ const strictAuthLimiter = (0, express_rate_limit_1.default)({
     max: env_1.env.AUTH_RATE_LIMIT_MAX,
     standardHeaders: true,
     legacyHeaders: false,
+    validate: { trustProxy: false },
+    skip: () => env_1.env.AUTH_RATE_LIMIT_MAX <= 0,
     message: { error: 'Too many authentication attempts, please try again after a minute' },
 });
 // Mount limiters to endpoints
