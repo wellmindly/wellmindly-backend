@@ -1,0 +1,18 @@
+{
+  "domains": [
+    {
+      "id": "dom_ves_ac_in",
+      "domain": "ves.ac.in",
+      "name": "VES College (VESIT / VES)",
+      "createdAt": "2026-10-20T00:00:00.000Z"
+    }
+  ],
+  "bypassEmails": [
+    {
+      "id": "byp_jmalani54",
+      "email": "jmalani54@gmail.com",
+      "note": "Admin Test / VIP Bypass Access",
+      "createdAt": "2026-10-20T00:00:00.000Z"
+    }
+  ]
+}

@@ -9,6 +9,8 @@ const prisma_1 = __importDefault(require("../lib/prisma"));
 const jwt_1 = require("../lib/jwt");
 const env_1 = require("../config/env");
 const mailer_1 = require("../utils/mailer");
+const jwt_2 = require("../utils/jwt");
+const accessControl_1 = require("../services/accessControl");
 const router = (0, express_1.Router)();
 const googleClient = new google_auth_library_1.OAuth2Client(env_1.env.GOOGLE_CLIENT_ID);
 /**
@@ -31,7 +33,7 @@ router.post('/google/callback', async (req, res) => {
         try {
             ticket = await googleClient.verifyIdToken({
                 idToken,
-                audience: [env_1.env.GOOGLE_CLIENT_ID, '942167444638-jcpvjkm9j14lqj29lvn3gbcnju4nf5pt.apps.googleusercontent.com'].filter(Boolean),
+                audience: env_1.env.GOOGLE_CLIENT_ID,
             });
         }
         catch (err) {
@@ -89,6 +91,8 @@ router.post('/google/callback', async (req, res) => {
             role: user.role,
             universityId: user.universityId,
         });
+        const eligibility = await (0, accessControl_1.isStudentEligible)(emailLower);
+        const isVerified = eligibility.eligible || (university?.verified ?? false);
         res.status(200).json({
             token,
             user: {
@@ -98,9 +102,10 @@ router.post('/google/callback', async (req, res) => {
                 lastName: user.lastName,
                 role: user.role,
                 universityId: user.universityId,
-                universityDomain: university?.domain ?? null,
-                universityVerified: university?.verified ?? false,
+                universityDomain: university?.domain ?? eligibility.domain ?? null,
+                universityVerified: isVerified,
             },
+            eligibility,
         });
     }
     catch (error) {
@@ -245,8 +250,9 @@ router.post('/login', async (req, res) => {
         res.status(400).json({ error: 'Email and password are required' });
         return;
     }
+    const normalizedEmail = typeof email === 'string' ? email.toLowerCase().trim() : '';
     const user = await prisma_1.default.user.findUnique({
-        where: { email },
+        where: { email: normalizedEmail },
         include: { university: true },
     });
     if (!user || !user.passwordHash) {
@@ -271,6 +277,8 @@ router.post('/login', async (req, res) => {
         role: user.role,
         universityId: user.universityId,
     });
+    const eligibility = await (0, accessControl_1.isStudentEligible)(user.email);
+    const isVerified = eligibility.eligible || (user.university?.verified ?? false);
     res.status(200).json({
         token,
         user: {
@@ -280,9 +288,10 @@ router.post('/login', async (req, res) => {
             lastName: user.lastName,
             role: user.role,
             universityId: user.universityId,
-            universityDomain: user.university?.domain ?? null,
-            universityVerified: user.university?.verified ?? false,
+            universityDomain: user.university?.domain ?? eligibility.domain ?? null,
+            universityVerified: isVerified,
         },
+        eligibility,
     });
 });
 /**
@@ -348,6 +357,8 @@ router.post('/register', async (req, res) => {
             role: user.role,
             universityId: user.universityId,
         });
+        const eligibility = await (0, accessControl_1.isStudentEligible)(email);
+        const isVerified = eligibility.eligible || (university?.verified ?? false);
         res.status(201).json({
             token,
             user: {
@@ -357,14 +368,62 @@ router.post('/register', async (req, res) => {
                 lastName: user.lastName,
                 role: user.role,
                 universityId: user.universityId,
-                universityDomain: university?.domain ?? null,
-                universityVerified: university?.verified ?? false,
+                universityDomain: university?.domain ?? eligibility.domain ?? null,
+                universityVerified: isVerified,
             },
+            eligibility,
         });
     }
     catch (err) {
         console.error(err);
         res.status(500).json({ error: 'Registration failed. Please try again.' });
+    }
+});
+/**
+ * GET /api/auth/me
+ *
+ * Returns current authenticated user and live up-to-date eligibility status.
+ */
+router.get('/me', jwt_2.authenticateJWT, async (req, res) => {
+    try {
+        const userId = req.user?.sub;
+        const email = req.user?.email;
+        if (!userId && !email) {
+            res.status(401).json({ error: 'Unauthorized: missing user identity' });
+            return;
+        }
+        const user = await prisma_1.default.user.findFirst({
+            where: {
+                OR: [
+                    ...(userId ? [{ id: userId }] : []),
+                    ...(email ? [{ email }] : []),
+                ],
+            },
+            include: { university: true },
+        });
+        if (!user) {
+            res.status(404).json({ error: 'User not found' });
+            return;
+        }
+        const eligibility = await (0, accessControl_1.isStudentEligible)(user.email);
+        const isVerified = eligibility.eligible || (user.university?.verified ?? false);
+        res.status(200).json({
+            user: {
+                id: user.id,
+                email: user.email,
+                firstName: user.firstName,
+                lastName: user.lastName,
+                role: user.role,
+                universityId: user.universityId,
+                universityDomain: user.university?.domain ?? eligibility.domain ?? null,
+                universityVerified: isVerified,
+            },
+            eligibility,
+        });
+    }
+    catch (err) {
+        console.error('Error in /api/auth/me:', err);
+        res.status(500).json({ error: 'Failed to fetch current user' });
     }
 });
 /**

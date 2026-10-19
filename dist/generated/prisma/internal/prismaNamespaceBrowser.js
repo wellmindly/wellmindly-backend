@@ -48,7 +48,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.JsonNullValueFilter = exports.NullsOrder = exports.QueryMode = exports.NullableJsonNullValueInput = exports.SortOrder = exports.NotificationScalarFieldEnum = exports.AuditLogScalarFieldEnum = exports.CounselorInvitationScalarFieldEnum = exports.CounselorFeedbackScalarFieldEnum = exports.StudentFeedbackScalarFieldEnum = exports.SessionNoteScalarFieldEnum = exports.CounselorSessionScalarFieldEnum = exports.CounselorAvailabilityExceptionScalarFieldEnum = exports.CounselorAvailabilityScalarFieldEnum = exports.CounselorProfileScalarFieldEnum = exports.TalkReportScalarFieldEnum = exports.TalkReactionScalarFieldEnum = exports.TalkReplyScalarFieldEnum = exports.TalkNoteScalarFieldEnum = exports.TalkRoomScalarFieldEnum = exports.CounselorOnboardingScalarFieldEnum = exports.UniversityOnboardingScalarFieldEnum = exports.ContactRequestScalarFieldEnum = exports.CrisisHotlineScalarFieldEnum = exports.DailyCheckinScalarFieldEnum = exports.WaitlistScalarFieldEnum = exports.ChatMessageScalarFieldEnum = exports.QuizFeedbackScalarFieldEnum = exports.QuizResultScalarFieldEnum = exports.QuestionOptionScalarFieldEnum = exports.QuestionScalarFieldEnum = exports.QuizScalarFieldEnum = exports.UniversityScalarFieldEnum = exports.UserScalarFieldEnum = exports.TransactionIsolationLevel = exports.ModelName = exports.AnyNull = exports.JsonNull = exports.DbNull = exports.NullTypes = exports.Decimal = void 0;
+exports.JsonNullValueFilter = exports.NullsOrder = exports.QueryMode = exports.NullableJsonNullValueInput = exports.SortOrder = exports.BypassEmailScalarFieldEnum = exports.AllowedUniversityDomainScalarFieldEnum = exports.NotificationScalarFieldEnum = exports.AuditLogScalarFieldEnum = exports.CounselorInvitationScalarFieldEnum = exports.CounselorFeedbackScalarFieldEnum = exports.StudentFeedbackScalarFieldEnum = exports.SessionNoteScalarFieldEnum = exports.CounselorSessionScalarFieldEnum = exports.CounselorAvailabilityExceptionScalarFieldEnum = exports.CounselorAvailabilityScalarFieldEnum = exports.CounselorProfileScalarFieldEnum = exports.TalkReportScalarFieldEnum = exports.TalkReactionScalarFieldEnum = exports.TalkReplyScalarFieldEnum = exports.TalkNoteScalarFieldEnum = exports.TalkRoomScalarFieldEnum = exports.CounselorOnboardingScalarFieldEnum = exports.UniversityOnboardingScalarFieldEnum = exports.ContactRequestScalarFieldEnum = exports.CrisisHotlineScalarFieldEnum = exports.DailyCheckinScalarFieldEnum = exports.WaitlistScalarFieldEnum = exports.ChatMessageScalarFieldEnum = exports.QuizFeedbackScalarFieldEnum = exports.QuizResultScalarFieldEnum = exports.QuestionOptionScalarFieldEnum = exports.QuestionScalarFieldEnum = exports.QuizScalarFieldEnum = exports.UniversityScalarFieldEnum = exports.UserScalarFieldEnum = exports.TransactionIsolationLevel = exports.ModelName = exports.AnyNull = exports.JsonNull = exports.DbNull = exports.NullTypes = exports.Decimal = void 0;
 const runtime = __importStar(require("@prisma/client/runtime/index-browser"));
 exports.Decimal = runtime.Decimal;
 exports.NullTypes = {
@@ -103,7 +103,9 @@ exports.ModelName = {
     CounselorFeedback: 'CounselorFeedback',
     CounselorInvitation: 'CounselorInvitation',
     AuditLog: 'AuditLog',
-    Notification: 'Notification'
+    Notification: 'Notification',
+    AllowedUniversityDomain: 'AllowedUniversityDomain',
+    BypassEmail: 'BypassEmail'
 };
 /*
  * Enums
@@ -397,6 +399,20 @@ exports.NotificationScalarFieldEnum = {
     type: 'type',
     read: 'read',
     createdAt: 'createdAt'
+};
+exports.AllowedUniversityDomainScalarFieldEnum = {
+    id: 'id',
+    domain: 'domain',
+    name: 'name',
+    createdAt: 'createdAt',
+    updatedAt: 'updatedAt'
+};
+exports.BypassEmailScalarFieldEnum = {
+    id: 'id',
+    email: 'email',
+    note: 'note',
+    createdAt: 'createdAt',
+    updatedAt: 'updatedAt'
 };
 exports.SortOrder = {
     asc: 'asc',

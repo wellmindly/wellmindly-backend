@@ -7,6 +7,7 @@ import { bookSessionTransaction } from '../../services/bookingService';
 import { logAuditEvent } from '../../utils/auditLogger';
 import { queueEmail } from '../../utils/emailQueue';
 import { escapeHtml } from '../../utils/escapeHtml';
+import { isStudentEligible } from '../../services/accessControl';
 
 const router = Router();
 
@@ -112,6 +113,27 @@ router.post('/sessions/book', async (req: AuthenticatedRequest, res: Response) =
     return;
   }
 
+  // Server-side guard: Only verified university students or bypass accounts can book 1-on-1 human coaching
+  let userEmail = req.user?.email;
+  if (!userEmail && req.user?.sub) {
+    const u = await prisma.user.findUnique({
+      where: { id: req.user.sub },
+      select: { email: true, universityId: true },
+    });
+    userEmail = u?.email;
+  }
+
+  const eligibility = await isStudentEligible(userEmail || '');
+  if (!eligibility.eligible && !req.user?.universityId) {
+    sendError(
+      res,
+      'ELIGIBILITY_RESTRICTED',
+      '1-on-1 human counseling is currently available only for verified university students.',
+      403
+    );
+    return;
+  }
+
   try {
     const session = await bookSessionTransaction({
       studentId: req.user!.sub,
@@ -120,6 +142,7 @@ router.post('/sessions/book', async (req: AuthenticatedRequest, res: Response) =
       endTimeUtc: new Date(endTime),
       ipAddress: req.ip || undefined,
     });
+
 
     sendSuccess(res, session, 201);
   } catch (err: any) {

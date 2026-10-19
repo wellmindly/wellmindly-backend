@@ -12,6 +12,7 @@ const bookingService_1 = require("../../services/bookingService");
 const auditLogger_1 = require("../../utils/auditLogger");
 const emailQueue_1 = require("../../utils/emailQueue");
 const escapeHtml_1 = require("../../utils/escapeHtml");
+const accessControl_1 = require("../../services/accessControl");
 const router = (0, express_1.Router)();
 // Protect student endpoints with JWT
 router.use(rbac_1.authenticateJWT, (0, rbac_1.requireRoles)(['STUDENT', 'ADMIN', 'SUPER_ADMIN']));
@@ -93,6 +94,20 @@ router.post('/sessions/book', async (req, res) => {
     const { counselorId, startTime, endTime } = req.body;
     if (!counselorId || !startTime || !endTime) {
         (0, response_1.sendError)(res, 'INVALID_INPUT', 'counselorId, startTime, and endTime are required', 400);
+        return;
+    }
+    // Server-side guard: Only verified university students or bypass accounts can book 1-on-1 human coaching
+    let userEmail = req.user?.email;
+    if (!userEmail && req.user?.sub) {
+        const u = await prisma_1.default.user.findUnique({
+            where: { id: req.user.sub },
+            select: { email: true, universityId: true },
+        });
+        userEmail = u?.email;
+    }
+    const eligibility = await (0, accessControl_1.isStudentEligible)(userEmail || '');
+    if (!eligibility.eligible && !req.user?.universityId) {
+        (0, response_1.sendError)(res, 'ELIGIBILITY_RESTRICTED', '1-on-1 human counseling is currently available only for verified university students.', 403);
         return;
     }
     try {

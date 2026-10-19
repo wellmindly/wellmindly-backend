@@ -4,6 +4,8 @@ import prisma from '../lib/prisma';
 import { signToken } from '../lib/jwt';
 import { env } from '../config/env';
 import { sendEmail, getOtpTemplate } from '../utils/mailer';
+import { authenticateJWT } from '../utils/jwt';
+import { isStudentEligible } from '../services/accessControl';
 
 const router = Router();
 const googleClient = new OAuth2Client(env.GOOGLE_CLIENT_ID);
@@ -30,7 +32,7 @@ router.post('/google/callback', async (req: Request, res: Response) => {
     try {
       ticket = await googleClient.verifyIdToken({
         idToken,
-        audience: [env.GOOGLE_CLIENT_ID, '942167444638-jcpvjkm9j14lqj29lvn3gbcnju4nf5pt.apps.googleusercontent.com'].filter(Boolean),
+        audience: env.GOOGLE_CLIENT_ID,
       });
     } catch (err: any) {
       console.error('Google ID token verification failed via SDK, attempting fallback decode:', err);
@@ -91,6 +93,9 @@ router.post('/google/callback', async (req: Request, res: Response) => {
       universityId: user.universityId,
     });
 
+    const eligibility = await isStudentEligible(emailLower);
+    const isVerified = eligibility.eligible || (university?.verified ?? false);
+
     res.status(200).json({
       token,
       user: {
@@ -100,10 +105,12 @@ router.post('/google/callback', async (req: Request, res: Response) => {
         lastName: user.lastName,
         role: user.role,
         universityId: user.universityId,
-        universityDomain: university?.domain ?? null,
-        universityVerified: university?.verified ?? false,
+        universityDomain: university?.domain ?? eligibility.domain ?? null,
+        universityVerified: isVerified,
       },
+      eligibility,
     });
+
   } catch (error: any) {
     console.error('Error in /api/auth/google/callback:', error);
     res.status(500).json({ error: 'Google authentication failed', details: error?.message || 'Internal server error' });
@@ -282,8 +289,10 @@ router.post('/login', async (req: Request, res: Response) => {
     return;
   }
 
+  const normalizedEmail = typeof email === 'string' ? email.toLowerCase().trim() : '';
+
   const user = await prisma.user.findUnique({
-    where: { email },
+    where: { email: normalizedEmail },
     include: { university: true },
   });
 
@@ -314,6 +323,9 @@ router.post('/login', async (req: Request, res: Response) => {
     universityId: user.universityId,
   });
 
+  const eligibility = await isStudentEligible(user.email);
+  const isVerified = eligibility.eligible || (user.university?.verified ?? false);
+
   res.status(200).json({
     token,
     user: {
@@ -323,10 +335,12 @@ router.post('/login', async (req: Request, res: Response) => {
       lastName: user.lastName,
       role: user.role,
       universityId: user.universityId,
-      universityDomain: user.university?.domain ?? null,
-      universityVerified: user.university?.verified ?? false,
+      universityDomain: user.university?.domain ?? eligibility.domain ?? null,
+      universityVerified: isVerified,
     },
+    eligibility,
   });
+
 });
 
 /**
@@ -405,6 +419,9 @@ router.post('/register', async (req: Request, res: Response) => {
       universityId: user.universityId,
     });
 
+    const eligibility = await isStudentEligible(email);
+    const isVerified = eligibility.eligible || (university?.verified ?? false);
+
     res.status(201).json({
       token,
       user: {
@@ -414,15 +431,69 @@ router.post('/register', async (req: Request, res: Response) => {
         lastName: user.lastName,
         role: user.role,
         universityId: user.universityId,
-        universityDomain: university?.domain ?? null,
-        universityVerified: university?.verified ?? false,
+        universityDomain: university?.domain ?? eligibility.domain ?? null,
+        universityVerified: isVerified,
       },
+      eligibility,
     });
   } catch (err: any) {
     console.error(err);
     res.status(500).json({ error: 'Registration failed. Please try again.' });
   }
 });
+
+/**
+ * GET /api/auth/me
+ *
+ * Returns current authenticated user and live up-to-date eligibility status.
+ */
+router.get('/me', authenticateJWT, async (req: Request, res: Response) => {
+  try {
+    const userId = req.user?.sub;
+    const email = req.user?.email;
+
+    if (!userId && !email) {
+      res.status(401).json({ error: 'Unauthorized: missing user identity' });
+      return;
+    }
+
+    const user = await prisma.user.findFirst({
+      where: {
+        OR: [
+          ...(userId ? [{ id: userId }] : []),
+          ...(email ? [{ email }] : []),
+        ],
+      },
+      include: { university: true },
+    });
+
+    if (!user) {
+      res.status(404).json({ error: 'User not found' });
+      return;
+    }
+
+    const eligibility = await isStudentEligible(user.email);
+    const isVerified = eligibility.eligible || (user.university?.verified ?? false);
+
+    res.status(200).json({
+      user: {
+        id: user.id,
+        email: user.email,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        role: user.role,
+        universityId: user.universityId,
+        universityDomain: user.university?.domain ?? eligibility.domain ?? null,
+        universityVerified: isVerified,
+      },
+      eligibility,
+    });
+  } catch (err: any) {
+    console.error('Error in /api/auth/me:', err);
+    res.status(500).json({ error: 'Failed to fetch current user' });
+  }
+});
+
 
 /**
  * POST /api/auth/waitlist

@@ -9,6 +9,7 @@ const jwt_1 = require("../utils/jwt");
 const ai_1 = require("../utils/ai");
 const enums_1 = require("../generated/prisma/enums");
 const s3_1 = require("../utils/s3");
+const accessControl_1 = require("../services/accessControl");
 const router = (0, express_1.Router)();
 /**
  * POST /api/admin/upload
@@ -561,6 +562,125 @@ router.post('/talk/flagged/:type/:id/resolve', jwt_1.authenticateJWT, (0, jwt_1.
     catch (error) {
         console.error('Error resolving flagged content:', error);
         res.status(500).json({ error: 'Failed to resolve flagged content' });
+    }
+});
+/**
+ * =========================================================================
+ * Access Control Management: Allowed University Domains & Bypass Emails
+ * =========================================================================
+ */
+/**
+ * GET /api/admin/access-control
+ * Fetches all allowed domains and bypass emails.
+ */
+router.get('/access-control', jwt_1.authenticateJWT, (0, jwt_1.authorizeRoles)('ADMIN', 'SUPER_ADMIN'), async (_req, res) => {
+    try {
+        const [domains, bypassEmails] = await Promise.all([
+            (0, accessControl_1.getAllowedDomains)(),
+            (0, accessControl_1.getBypassEmails)(),
+        ]);
+        res.status(200).json({
+            success: true,
+            domains,
+            bypassEmails,
+        });
+    }
+    catch (error) {
+        console.error('Error fetching access control data:', error);
+        res.status(500).json({ error: 'Failed to fetch access control data' });
+    }
+});
+/**
+ * POST /api/admin/access-control/domains
+ * Adds a new allowed university domain (e.g. ves.ac.in).
+ */
+router.post('/access-control/domains', jwt_1.authenticateJWT, (0, jwt_1.authorizeRoles)('ADMIN', 'SUPER_ADMIN'), async (req, res) => {
+    try {
+        const { domain, name } = req.body || {};
+        if (!domain || typeof domain !== 'string') {
+            res.status(400).json({ error: 'A valid domain is required' });
+            return;
+        }
+        const item = await (0, accessControl_1.addAllowedDomain)(domain, name);
+        res.status(201).json({
+            success: true,
+            domain: item,
+        });
+    }
+    catch (error) {
+        console.error('Error adding allowed domain:', error);
+        res.status(400).json({ error: error?.message || 'Failed to add allowed domain' });
+    }
+});
+/**
+ * DELETE /api/admin/access-control/domains/:id
+ * Removes an allowed university domain.
+ */
+router.delete('/access-control/domains/:id', jwt_1.authenticateJWT, (0, jwt_1.authorizeRoles)('ADMIN', 'SUPER_ADMIN'), async (req, res) => {
+    try {
+        const id = String(req.params.id);
+        const success = await (0, accessControl_1.deleteAllowedDomain)(id);
+        res.status(200).json({ success });
+    }
+    catch (error) {
+        console.error('Error deleting allowed domain:', error);
+        res.status(500).json({ error: 'Failed to delete allowed domain' });
+    }
+});
+/**
+ * POST /api/admin/access-control/bypass-emails
+ * Adds a new bypass student email (e.g. jmalani54@gmail.com).
+ */
+router.post('/access-control/bypass-emails', jwt_1.authenticateJWT, (0, jwt_1.authorizeRoles)('ADMIN', 'SUPER_ADMIN'), async (req, res) => {
+    try {
+        const { email, note } = req.body || {};
+        if (!email || typeof email !== 'string') {
+            res.status(400).json({ error: 'A valid email is required' });
+            return;
+        }
+        const item = await (0, accessControl_1.addBypassEmail)(email, note);
+        res.status(201).json({
+            success: true,
+            bypassEmail: item,
+        });
+    }
+    catch (error) {
+        console.error('Error adding bypass email:', error);
+        res.status(400).json({ error: error?.message || 'Failed to add bypass email' });
+    }
+});
+/**
+ * DELETE /api/admin/access-control/bypass-emails/:id
+ * Removes a bypass student email.
+ */
+router.delete('/access-control/bypass-emails/:id', jwt_1.authenticateJWT, (0, jwt_1.authorizeRoles)('ADMIN', 'SUPER_ADMIN'), async (req, res) => {
+    try {
+        const id = String(req.params.id);
+        const success = await (0, accessControl_1.deleteBypassEmail)(id);
+        res.status(200).json({ success });
+    }
+    catch (error) {
+        console.error('Error deleting bypass email:', error);
+        res.status(500).json({ error: 'Failed to delete bypass email' });
+    }
+});
+/**
+ * POST /api/admin/access-control/check
+ * Diagnostic tool for testing if an email has university eligibility.
+ */
+router.post('/access-control/check', jwt_1.authenticateJWT, (0, jwt_1.authorizeRoles)('ADMIN', 'SUPER_ADMIN'), async (req, res) => {
+    try {
+        const { email } = req.body || {};
+        if (!email || typeof email !== 'string') {
+            res.status(400).json({ error: 'An email is required to check' });
+            return;
+        }
+        const result = await (0, accessControl_1.isStudentEligible)(email);
+        res.status(200).json(result);
+    }
+    catch (error) {
+        console.error('Error checking eligibility:', error);
+        res.status(500).json({ error: 'Failed to evaluate eligibility' });
     }
 });
 exports.default = router;

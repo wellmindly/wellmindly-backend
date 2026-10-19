@@ -31,7 +31,8 @@ jobs:
         run: npm run build
 
       - name: Package application
-        run: zip -r deploy.zip dist prisma package.json package-lock.json .ebextensions
+        run: zip -r deploy.zip dist prisma data package.json package-lock.json .ebextensions
+
 
       - name: Deploy to Elastic Beanstalk
         uses: einaregilsson/beanstalk-deploy@v22
