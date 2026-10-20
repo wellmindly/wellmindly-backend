@@ -346,15 +346,20 @@ router.get(
         let stageUpdatedAt: string | null = null;
         let details: any = null;
 
-        if (user && user.counselorProfile?.status === 'ACTIVE') {
-          stage = 'ONBOARDED';
-          stageLabel = 'Onboarded & Active';
-          stageUpdatedAt = user.counselorProfile.updatedAt.toISOString();
+        const docsTime = docsLog ? new Date(docsLog.createdAt).getTime() : 0;
+        const inviteTime = inviteLog ? new Date(inviteLog.createdAt).getTime() : (inv ? new Date(inv.createdAt).getTime() : 0);
+
+        if (docsTime > 0 && docsTime >= inviteTime) {
+          // Documents were requested for this applicant
+          stage = 'DOCS_REQUESTED';
+          stageLabel = 'Degree & ID Docs Requested';
+          stageUpdatedAt = docsLog!.createdAt.toISOString();
+          details = docsLog!.details;
         } else if (inv || inviteLog) {
-          if (inv?.used) {
+          if (inv?.used || (user && user.counselorProfile?.status === 'ACTIVE')) {
             stage = 'ONBOARDED';
-            stageLabel = 'Registered Counselor';
-            stageUpdatedAt = inv.createdAt.toISOString();
+            stageLabel = 'Onboarded & Active';
+            stageUpdatedAt = user?.counselorProfile?.updatedAt ? user.counselorProfile.updatedAt.toISOString() : (inv?.createdAt ? inv.createdAt.toISOString() : null);
           } else {
             stage = 'INVITE_SENT';
             stageLabel = 'Invitation Link Dispatched';
@@ -366,6 +371,10 @@ router.get(
           stageLabel = 'Degree & ID Docs Requested';
           stageUpdatedAt = docsLog.createdAt.toISOString();
           details = docsLog.details;
+        } else if (user && user.counselorProfile?.status === 'ACTIVE') {
+          stage = 'ONBOARDED';
+          stageLabel = 'Onboarded & Active';
+          stageUpdatedAt = user.counselorProfile.updatedAt.toISOString();
         }
 
         return {

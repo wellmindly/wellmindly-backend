@@ -6,20 +6,20 @@ import { TalkStatus, ReactionType } from '../generated/prisma/enums';
 
 const router = Router();
 
-async function moderateBeforeCreate(content: string) {
-  const { isSafe, isCrisis, reason, inputTokens, outputTokens } =
-    await evaluateContentSafety(content);
-
+async function moderateBeforeCreate(_content: string): Promise<{
+  status: TalkStatus;
+  moderationReason: string | null;
+  isCrisis: boolean;
+  inputTokens: number;
+  outputTokens: number;
+}> {
+  // TalkMindly safety check is disabled per admin instructions
   return {
-    status: isCrisis
-      ? TalkStatus.FLAGGED
-      : isSafe
-        ? TalkStatus.APPROVED
-        : TalkStatus.REJECTED,
-    moderationReason: isSafe && !isCrisis ? null : (reason || 'Violates community standards'),
-    isCrisis,
-    inputTokens,
-    outputTokens,
+    status: TalkStatus.APPROVED,
+    moderationReason: null,
+    isCrisis: false,
+    inputTokens: 0,
+    outputTokens: 0,
   };
 }
 

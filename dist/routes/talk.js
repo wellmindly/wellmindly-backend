@@ -5,22 +5,17 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
 const jwt_1 = require("../utils/jwt");
-const ai_1 = require("../utils/ai");
 const prisma_1 = __importDefault(require("../lib/prisma"));
 const enums_1 = require("../generated/prisma/enums");
 const router = (0, express_1.Router)();
-async function moderateBeforeCreate(content) {
-    const { isSafe, isCrisis, reason, inputTokens, outputTokens } = await (0, ai_1.evaluateContentSafety)(content);
+async function moderateBeforeCreate(_content) {
+    // TalkMindly safety check is disabled per admin instructions
     return {
-        status: isCrisis
-            ? enums_1.TalkStatus.FLAGGED
-            : isSafe
-                ? enums_1.TalkStatus.APPROVED
-                : enums_1.TalkStatus.REJECTED,
-        moderationReason: isSafe && !isCrisis ? null : (reason || 'Violates community standards'),
-        isCrisis,
-        inputTokens,
-        outputTokens,
+        status: enums_1.TalkStatus.APPROVED,
+        moderationReason: null,
+        isCrisis: false,
+        inputTokens: 0,
+        outputTokens: 0,
     };
 }
 // ==========================================

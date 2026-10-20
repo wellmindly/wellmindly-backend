@@ -140,24 +140,29 @@ async function ensureDatabaseTables() {
       );
     `);
         dbTablesInitialized = true;
-        // Sync any existing local items into the PostgreSQL database so no entries are lost
-        const local = readLocalData();
+        // Only seed initial default data if the database has ZERO records
         const prismaAny = prisma_1.default;
         if (prismaAny.allowedUniversityDomain) {
-            for (const d of local.domains) {
-                await prismaAny.allowedUniversityDomain.upsert({
-                    where: { domain: d.domain.toLowerCase() },
-                    update: { name: d.name },
-                    create: { id: d.id, domain: d.domain.toLowerCase(), name: d.name },
+            const count = await prismaAny.allowedUniversityDomain.count().catch(() => -1);
+            if (count === 0) {
+                await prismaAny.allowedUniversityDomain.create({
+                    data: {
+                        id: 'dom_ves_ac_in',
+                        domain: 'ves.ac.in',
+                        name: 'VES College (VESIT / VES)',
+                    },
                 }).catch(() => { });
             }
         }
         if (prismaAny.bypassEmail) {
-            for (const b of local.bypassEmails) {
-                await prismaAny.bypassEmail.upsert({
-                    where: { email: b.email.toLowerCase() },
-                    update: { note: b.note },
-                    create: { id: b.id, email: b.email.toLowerCase(), note: b.note },
+            const count = await prismaAny.bypassEmail.count().catch(() => -1);
+            if (count === 0) {
+                await prismaAny.bypassEmail.create({
+                    data: {
+                        id: 'byp_jmalani54',
+                        email: 'jmalani54@gmail.com',
+                        note: 'Admin Test / VIP Bypass Access',
+                    },
                 }).catch(() => { });
             }
         }
@@ -168,32 +173,24 @@ async function ensureDatabaseTables() {
 }
 /**
  * Retrieve all allowed university domains.
- * Primary source is PostgreSQL, perfectly merged with local cache.
+ * Primary source is PostgreSQL.
  */
 async function getAllowedDomains() {
     await ensureDatabaseTables();
-    const local = readLocalData().domains;
     try {
         const prismaAny = prisma_1.default;
         if (prismaAny.allowedUniversityDomain) {
             const dbDomains = await prismaAny.allowedUniversityDomain.findMany({
                 orderBy: { createdAt: 'desc' },
             });
-            if (Array.isArray(dbDomains) && dbDomains.length > 0) {
-                const map = new Map();
-                for (const item of local) {
-                    map.set(item.domain.toLowerCase(), item);
-                }
-                for (const d of dbDomains) {
-                    map.set(d.domain.toLowerCase(), {
-                        id: d.id,
-                        domain: d.domain,
-                        name: d.name || undefined,
-                        createdAt: d.createdAt?.toISOString?.() || String(d.createdAt),
-                    });
-                }
-                const result = Array.from(map.values());
-                // Keep local cache in sync with DB
+            if (Array.isArray(dbDomains)) {
+                const result = dbDomains.map((d) => ({
+                    id: d.id,
+                    domain: d.domain,
+                    name: d.name || undefined,
+                    createdAt: d.createdAt?.toISOString?.() || String(d.createdAt),
+                }));
+                // Update local file cache to reflect DB
                 const data = readLocalData();
                 data.domains = result;
                 writeLocalData(data);
@@ -204,36 +201,28 @@ async function getAllowedDomains() {
     catch (err) {
         console.warn('[AccessControl] DB query for allowed domains failed, using local fallback:', err.message || err);
     }
-    return local;
+    return readLocalData().domains;
 }
 /**
  * Retrieve all bypass student emails.
- * Primary source is PostgreSQL, perfectly merged with local cache.
+ * Primary source is PostgreSQL.
  */
 async function getBypassEmails() {
     await ensureDatabaseTables();
-    const local = readLocalData().bypassEmails;
     try {
         const prismaAny = prisma_1.default;
         if (prismaAny.bypassEmail) {
             const dbEmails = await prismaAny.bypassEmail.findMany({
                 orderBy: { createdAt: 'desc' },
             });
-            if (Array.isArray(dbEmails) && dbEmails.length > 0) {
-                const map = new Map();
-                for (const item of local) {
-                    map.set(item.email.toLowerCase(), item);
-                }
-                for (const b of dbEmails) {
-                    map.set(b.email.toLowerCase(), {
-                        id: b.id,
-                        email: b.email,
-                        note: b.note || undefined,
-                        createdAt: b.createdAt?.toISOString?.() || String(b.createdAt),
-                    });
-                }
-                const result = Array.from(map.values());
-                // Keep local cache in sync with DB
+            if (Array.isArray(dbEmails)) {
+                const result = dbEmails.map((b) => ({
+                    id: b.id,
+                    email: b.email,
+                    note: b.note || undefined,
+                    createdAt: b.createdAt?.toISOString?.() || String(b.createdAt),
+                }));
+                // Update local file cache to reflect DB
                 const data = readLocalData();
                 data.bypassEmails = result;
                 writeLocalData(data);
@@ -244,7 +233,7 @@ async function getBypassEmails() {
     catch (err) {
         console.warn('[AccessControl] DB query for bypass emails failed, using local fallback:', err.message || err);
     }
-    return local;
+    return readLocalData().bypassEmails;
 }
 /**
  * Add a new allowed university domain.

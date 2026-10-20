@@ -27,9 +27,9 @@ const s3Client = new client_s3_1.S3Client({
  * @param folder - Destination folder prefix in bucket (defaults to 'avatars')
  */
 async function uploadToS3(buffer, originalName, mimeType, folder = 'avatars') {
-    const sanitizedName = originalName.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const safeName = (originalName || `avatar_${Date.now()}.png`).replace(/[^a-zA-Z0-9._-]/g, '_');
     const timestamp = Date.now();
-    const key = `${folder}/${timestamp}-${sanitizedName}`;
+    const key = `${folder}/${timestamp}-${safeName}`;
     try {
         const command = new client_s3_1.PutObjectCommand({
             Bucket: bucketName,
@@ -47,7 +47,14 @@ async function uploadToS3(buffer, originalName, mimeType, folder = 'avatars') {
     }
     catch (error) {
         console.error(`❌ S3 Upload failed for key '${key}':`, error);
-        // Return formatted S3 public URL
+        // If S3 fails, fallback to base64 Data URI so counselor image still displays
+        if (buffer.length < 3 * 1024 * 1024) {
+            const dataUrl = `data:${mimeType || 'image/png'};base64,${buffer.toString('base64')}`;
+            return {
+                url: dataUrl,
+                key,
+            };
+        }
         const fallbackUrl = `https://${bucketName}.s3.${region}.amazonaws.com/${key}`;
         return {
             url: fallbackUrl,

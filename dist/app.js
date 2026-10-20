@@ -46,7 +46,8 @@ app.use((0, cors_1.default)({
     },
     credentials: true,
 }));
-app.use(express_1.default.json());
+app.use(express_1.default.json({ limit: '15mb' }));
+app.use(express_1.default.urlencoded({ extended: true, limit: '15mb' }));
 // API rate limiting
 const generalLimiter = (0, express_rate_limit_1.default)({
     windowMs: 15 * 60 * 1000,
