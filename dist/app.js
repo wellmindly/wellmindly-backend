@@ -71,6 +71,9 @@ app.use('/api', generalLimiter);
 app.use('/api/auth/register', strictAuthLimiter);
 app.use('/api/auth/login', strictAuthLimiter);
 app.use('/api/auth/forgot-password', strictAuthLimiter);
+app.use('/api/v1/counselors/login', strictAuthLimiter);
+app.use('/api/v1/counselors/forgot-password', strictAuthLimiter);
+app.use('/api/v1/counselors/reset-password', strictAuthLimiter);
 // Legacy routes
 app.use('/api/auth', auth_1.default);
 app.use('/api/quizzes', quizzes_1.default);

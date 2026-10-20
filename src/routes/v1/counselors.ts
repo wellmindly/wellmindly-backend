@@ -1,10 +1,13 @@
 import { Router, Request, Response } from 'express';
 import bcrypt from 'bcrypt';
+import jwt from 'jsonwebtoken';
 import prisma from '../../lib/prisma';
 import { signToken } from '../../lib/jwt';
+import { env } from '../../config/env';
 import { authenticateJWT, requireRoles, AuthenticatedRequest } from '../../middleware/rbac';
 import { sendSuccess, sendError } from '../../utils/response';
 import { queueEmail } from '../../utils/emailQueue';
+import { sendEmail, getPasswordResetLinkTemplate } from '../../utils/mailer';
 import { logAuditEvent } from '../../utils/auditLogger';
 import { uploadToS3 } from '../../utils/s3';
 import { escapeHtml } from '../../utils/escapeHtml';
@@ -168,6 +171,208 @@ router.post('/login', async (req: Request, res: Response) => {
       counselorProfile: user.counselorProfile,
     },
   });
+});
+
+/**
+ * POST /api/v1/counselors/forgot-password
+ * Send password reset link to counselor email
+ */
+router.post('/forgot-password', async (req: Request, res: Response) => {
+  const { email } = req.body as { email?: string };
+
+  if (!email || typeof email !== 'string') {
+    sendError(res, 'INVALID_INPUT', 'A valid email address is required', 400);
+    return;
+  }
+
+  const emailLower = email.toLowerCase().trim();
+
+  try {
+    const user = await prisma.user.findUnique({
+      where: { email: emailLower },
+      include: { counselorProfile: true },
+    });
+
+    if (!user || user.role !== 'COUNSELOR') {
+      sendError(res, 'USER_NOT_FOUND', 'No counselor account found with that email address', 404);
+      return;
+    }
+
+    if (user.counselorProfile?.status === 'SUSPENDED') {
+      sendError(res, 'ACCOUNT_SUSPENDED', 'Your counselor account is suspended', 403);
+      return;
+    }
+
+    // Generate single-use signed reset token using secret salted with user's current password hash
+    const resetSecret = `${env.JWT_SECRET}-${user.passwordHash || 'no-pwd'}`;
+    const resetToken = jwt.sign(
+      { sub: user.id, email: user.email, role: user.role, purpose: 'counselor_reset_password' },
+      resetSecret,
+      { expiresIn: '1h' }
+    );
+
+    const counselorPortalUrl = env.COUNSELOR_PORTAL_URL.replace(/\/+$/, '');
+    const resetUrl = `${counselorPortalUrl}/reset-password?token=${encodeURIComponent(resetToken)}&email=${encodeURIComponent(user.email)}`;
+
+    await sendEmail({
+      to: user.email,
+      subject: 'Reset Your Counselor Password - WellMindly',
+      html: getPasswordResetLinkTemplate({
+        name: user.firstName ? `${user.firstName} ${user.lastName}`.trim() : 'Counselor',
+        resetLink: resetUrl,
+        expiryMinutes: 60,
+      }),
+    });
+
+    logAuditEvent({
+      actorId: user.id,
+      action: 'REQUEST_PASSWORD_RESET',
+      targetEntity: 'User',
+      targetId: user.id,
+      ipAddress: req.ip || null,
+    });
+
+    sendSuccess(res, {
+      message: 'Password reset link has been sent to your email.',
+    });
+  } catch (err: any) {
+    console.error('Error processing counselor forgot-password:', err);
+    sendError(res, 'INTERNAL_ERROR', 'Failed to process password reset request. Please try again.', 500);
+  }
+});
+
+/**
+ * POST /api/v1/counselors/verify-reset-token
+ * Verify if password reset token is valid and not expired
+ */
+router.post('/verify-reset-token', async (req: Request, res: Response) => {
+  const { token, email } = req.body as { token?: string; email?: string };
+
+  if (!token || typeof token !== 'string') {
+    sendError(res, 'INVALID_INPUT', 'Reset token is required', 400);
+    return;
+  }
+
+  try {
+    let targetEmail = email ? email.toLowerCase().trim() : undefined;
+
+    if (!targetEmail) {
+      const decodedUnverified = jwt.decode(token) as { sub?: string; email?: string } | null;
+      if (!decodedUnverified?.email && !decodedUnverified?.sub) {
+        sendError(res, 'INVALID_TOKEN', 'Reset link is invalid or malformed', 400);
+        return;
+      }
+      targetEmail = decodedUnverified.email?.toLowerCase().trim();
+    }
+
+    const user = targetEmail
+      ? await prisma.user.findUnique({ where: { email: targetEmail } })
+      : null;
+
+    if (!user || user.role !== 'COUNSELOR') {
+      sendError(res, 'INVALID_TOKEN', 'Reset link is invalid or associated counselor account was not found', 400);
+      return;
+    }
+
+    const resetSecret = `${env.JWT_SECRET}-${user.passwordHash || 'no-pwd'}`;
+    const decoded = jwt.verify(token, resetSecret) as { sub: string; email: string; purpose?: string };
+
+    if (decoded.purpose !== 'counselor_reset_password') {
+      sendError(res, 'INVALID_TOKEN', 'Reset link is invalid for password reset', 400);
+      return;
+    }
+
+    sendSuccess(res, {
+      valid: true,
+      email: user.email,
+      firstName: user.firstName,
+    });
+  } catch (err: any) {
+    if (err?.name === 'TokenExpiredError') {
+      sendError(res, 'TOKEN_EXPIRED', 'Password reset link has expired. Please request a new one.', 400);
+      return;
+    }
+    sendError(res, 'INVALID_TOKEN', 'Reset link is invalid or has already been used.', 400);
+  }
+});
+
+/**
+ * POST /api/v1/counselors/reset-password
+ * Complete password reset for counselor
+ */
+router.post('/reset-password', async (req: Request, res: Response) => {
+  const { token, newPassword, email } = req.body as {
+    token?: string;
+    newPassword?: string;
+    email?: string;
+  };
+
+  if (!token || !newPassword) {
+    sendError(res, 'INVALID_INPUT', 'Reset token and new password are required', 400);
+    return;
+  }
+
+  if (typeof newPassword !== 'string' || newPassword.length < 6) {
+    sendError(res, 'INVALID_INPUT', 'New password must be at least 6 characters long', 400);
+    return;
+  }
+
+  try {
+    let targetEmail = email ? email.toLowerCase().trim() : undefined;
+
+    if (!targetEmail) {
+      const decodedUnverified = jwt.decode(token) as { sub?: string; email?: string } | null;
+      if (!decodedUnverified?.email && !decodedUnverified?.sub) {
+        sendError(res, 'INVALID_TOKEN', 'Reset link is invalid or malformed', 400);
+        return;
+      }
+      targetEmail = decodedUnverified.email?.toLowerCase().trim();
+    }
+
+    const user = targetEmail
+      ? await prisma.user.findUnique({ where: { email: targetEmail } })
+      : null;
+
+    if (!user || user.role !== 'COUNSELOR') {
+      sendError(res, 'INVALID_TOKEN', 'Reset link is invalid or associated counselor account was not found', 400);
+      return;
+    }
+
+    // Verify token using secret salted with current passwordHash
+    const resetSecret = `${env.JWT_SECRET}-${user.passwordHash || 'no-pwd'}`;
+    const decoded = jwt.verify(token, resetSecret) as { sub: string; email: string; purpose?: string };
+
+    if (decoded.purpose !== 'counselor_reset_password') {
+      sendError(res, 'INVALID_TOKEN', 'Reset link is invalid for password reset', 400);
+      return;
+    }
+
+    const saltRounds = 10;
+    const passwordHash = await bcrypt.hash(newPassword, saltRounds);
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { passwordHash },
+    });
+
+    logAuditEvent({
+      actorId: user.id,
+      action: 'RESET_PASSWORD',
+      targetEntity: 'User',
+      targetId: user.id,
+      ipAddress: req.ip || null,
+    });
+
+    sendSuccess(res, {
+      message: 'Password has been reset successfully. Please sign in with your new password.',
+    });
+  } catch (err: any) {
+    if (err?.name === 'TokenExpiredError') {
+      sendError(res, 'TOKEN_EXPIRED', 'Password reset link has expired. Please request a new one.', 400);
+      return;
+    }
+    sendError(res, 'INVALID_TOKEN', 'Reset link is invalid or has already been used.', 400);
+  }
 });
 
 // Protected routes below
