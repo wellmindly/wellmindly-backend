@@ -215,6 +215,24 @@ Return true only if there is a real, active safety concern. Do not flag standard
   }
 }
 
+// Deterministic crisis & safety heuristics (runs before AI and acts as guaranteed safety net)
+const CRISIS_PATTERNS = [
+  /\b(kill|end|take)\s+(my\s*self|my\s*life|it\s*all)\b/i,
+  /\b(commit|attempt|thinking\s+of)\s+suicide\b/i,
+  /\b(want\s+to|going\s+to|ready\s+to)\s+die\b/i,
+  /\b(hang|shoot|poison|overdose|drown|suffocate)\s+(my\s*self|me)\b/i,
+  /\b(cut|slit)\s+(my\s*wrist|my\s*throat|myself|my\s*arms?)\b/i,
+  /\b(better\s+off\s+dead|no\s+reason\s+to\s+live|don'?t\s+want\s+to\s+wake\s+up)\b/i,
+  /\b(suicidal|suicide|self[\s-]?harm)\b/i,
+  /\b(kms|kys)\b/i,
+];
+
+const HARASSMENT_PATTERNS = [
+  /\b(f+[\*u]+c*k+|s+[\*h!]+i*t+|b+[\*i!]+t*c*h+|c+[\*u]+n*t+|f+[\*a!]+g+[\*o0]+t+|n+[\*i!]+g+[\*e3a]+r*)\b/i,
+  /\b(s+[\*u]+c*k\s+(my|me|your|a)|blow\s*job|send\s*nudes?|eat\s*my\s*ass)\b/i,
+  /\b(whore|slut|bastard|retard|cunt)\b/i,
+];
+
 /**
  * Asynchronously moderates a note or reply for crisis and safety.
  * Evaluates:
@@ -230,11 +248,49 @@ Return true only if there is a real, active safety concern. Do not flag standard
 export async function evaluateContentSafety(
   content: string
 ): Promise<{ isSafe: boolean; isCrisis: boolean; reason?: string; inputTokens: number; outputTokens: number }> {
+  if (!content || typeof content !== 'string') {
+    return { isSafe: true, isCrisis: false, inputTokens: 0, outputTokens: 0 };
+  }
+
+  const trimmed = content.trim();
+
+  // 1. Guaranteed Local Deterministic Clinical Safety Gate
+  for (const pattern of CRISIS_PATTERNS) {
+    if (pattern.test(trimmed)) {
+      console.warn(`[safetyEvaluator] 🚨 Local clinical heuristic triggered (Crisis): "${trimmed.slice(0, 40)}..."`);
+      return {
+        isSafe: false,
+        isCrisis: true,
+        reason: 'Mentions self-harm or suicidal intent',
+        inputTokens: 0,
+        outputTokens: 0,
+      };
+    }
+  }
+
+  for (const pattern of HARASSMENT_PATTERNS) {
+    if (pattern.test(trimmed)) {
+      console.warn(`[safetyEvaluator] ⚠️ Local heuristic triggered (Harassment): "${trimmed.slice(0, 40)}..."`);
+      return {
+        isSafe: false,
+        isCrisis: false,
+        reason: 'Contains explicit language or harassment',
+        inputTokens: 0,
+        outputTokens: 0,
+      };
+    }
+  }
+
   if (!genAI) {
     return { isSafe: true, isCrisis: false, reason: undefined, inputTokens: 0, outputTokens: 0 };
   }
 
-  const modelName = env.GEMINI_MODEL || 'gemini-2.5-flash-lite';
+  const modelCandidates = [
+    env.GEMINI_MODEL || 'gemini-2.5-flash',
+    'gemini-2.0-flash',
+    'gemini-1.5-flash'
+  ];
+
   const systemInstruction = `You are a safety monitoring agent for a university student peer-support network (TalkMindly).
 Analyze the post content for safety violations:
 - Suicidal ideation, intent, or planning (isCrisis)
@@ -260,41 +316,44 @@ Examples:
 
 Be fair. Sadness, study fatigue, venting stress, and academic pressure are allowed. Only flag actual harassment, explicit vulgarity, obfuscated profanity bypasses, or safety crisis.`;
 
-  try {
-    const model = genAI.getGenerativeModel({
-      model: modelName,
-      generationConfig: {
-        responseMimeType: 'application/json',
-      },
-      systemInstruction,
-    });
+  for (const modelName of modelCandidates) {
+    try {
+      const model = genAI.getGenerativeModel({
+        model: modelName,
+        generationConfig: {
+          responseMimeType: 'application/json',
+        },
+        systemInstruction,
+      });
 
-    const result = (await Promise.race([
-      model.generateContent(content),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('Safety evaluator timed out')), 6000))
-    ])) as any;
+      const result = (await Promise.race([
+        model.generateContent(trimmed),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Safety evaluator timed out')), 6000))
+      ])) as any;
 
-    const text = result.response.text();
-    if (!text) {
-      return { isSafe: true, isCrisis: false, inputTokens: 0, outputTokens: 0 };
+      const text = result.response.text();
+      if (!text) continue;
+
+      const parsed = JSON.parse(text);
+      const isCrisis = parsed.isCrisis !== undefined ? !!parsed.isCrisis : (parsed.crisis !== undefined ? !!parsed.crisis : false);
+      const isSafe = parsed.isSafe !== undefined ? !!parsed.isSafe : (parsed.safe !== undefined ? !!parsed.safe : true);
+      const reason = parsed.reason || parsed.explanation || undefined;
+
+      let inputTokens = 0;
+      let outputTokens = 0;
+      if (result.response.usageMetadata) {
+        inputTokens = result.response.usageMetadata.promptTokenCount || 0;
+        outputTokens = result.response.usageMetadata.candidatesTokenCount || 0;
+      }
+
+      return { isSafe: isSafe && !isCrisis, isCrisis, reason, inputTokens, outputTokens };
+    } catch (err: any) {
+      console.warn(`[safetyEvaluator] Model ${modelName} attempt error:`, err.message || err);
+      // Try next model candidate
     }
-
-    const parsed = JSON.parse(text);
-    const isCrisis = parsed.isCrisis !== undefined ? !!parsed.isCrisis : (parsed.crisis !== undefined ? !!parsed.crisis : false);
-    const isSafe = parsed.isSafe !== undefined ? !!parsed.isSafe : (parsed.safe !== undefined ? !!parsed.safe : true);
-    const reason = parsed.reason || parsed.explanation || undefined;
-
-    let inputTokens = 0;
-    let outputTokens = 0;
-    if (result.response.usageMetadata) {
-      inputTokens = result.response.usageMetadata.promptTokenCount || 0;
-      outputTokens = result.response.usageMetadata.candidatesTokenCount || 0;
-    }
-
-    return { isSafe: isSafe && !isCrisis, isCrisis, reason, inputTokens, outputTokens };
-  } catch (err: any) {
-    console.error('[safetyEvaluator] ⚠️ Evaluation failed, falling back to safe:', err.message || err);
-    return { isSafe: true, isCrisis: false, inputTokens: 0, outputTokens: 0 };
   }
+
+  console.error('[safetyEvaluator] ⚠️ All Gemini models failed or timed out. Local heuristics were clean.');
+  return { isSafe: true, isCrisis: false, inputTokens: 0, outputTokens: 0 };
 }
 

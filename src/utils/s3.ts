@@ -1,4 +1,4 @@
-import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { env } from '../config/env';
 
 const region = env.AWS_REGION || 'us-east-1';
@@ -65,5 +65,25 @@ export async function uploadToS3(
       url: fallbackUrl,
       key,
     };
+  }
+}
+
+/**
+ * Fetch an object directly from S3 using AWS SDK
+ */
+export async function getS3Object(key: string): Promise<{ body: any; contentType?: string } | null> {
+  try {
+    const command = new GetObjectCommand({
+      Bucket: bucketName,
+      Key: key,
+    });
+    const res = await s3Client.send(command);
+    return {
+      body: res.Body,
+      contentType: res.ContentType,
+    };
+  } catch (error) {
+    console.error(`❌ Failed to get S3 object '${key}':`, error);
+    return null;
   }
 }

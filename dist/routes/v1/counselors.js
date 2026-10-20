@@ -377,6 +377,13 @@ router.post('/me/upload', rbac_1.authenticateJWT, (0, rbac_1.requireRoles)(['COU
         const name = fileName || `avatar_${Date.now()}.png`;
         const type = mimeType || 'image/png';
         const result = await (0, s3_1.uploadToS3)(buffer, name, type, folder || 'avatars');
+        const userId = req.user?.sub;
+        if (userId) {
+            await prisma_1.default.counselorProfile.updateMany({
+                where: { userId },
+                data: { avatarUrl: result.url },
+            });
+        }
         (0, response_1.sendSuccess)(res, {
             message: 'File uploaded to AWS S3 successfully',
             url: result.url,
@@ -386,6 +393,34 @@ router.post('/me/upload', rbac_1.authenticateJWT, (0, rbac_1.requireRoles)(['COU
     catch (error) {
         console.error('Error uploading file to S3:', error);
         (0, response_1.sendError)(res, 'UPLOAD_FAILED', 'Failed to upload file to S3', 500);
+    }
+});
+/**
+ * GET /api/v1/counselors/assets/:folder/:filename
+ * Public proxy to stream S3 images even when direct bucket access is private
+ */
+router.get('/assets/:folder/:filename', async (req, res) => {
+    try {
+        const { folder, filename } = req.params;
+        const key = `${folder}/${filename}`;
+        const s3Obj = await (0, s3_1.getS3Object)(key);
+        if (!s3Obj || !s3Obj.body) {
+            res.status(404).send('Asset not found');
+            return;
+        }
+        res.setHeader('Content-Type', s3Obj.contentType || 'image/png');
+        res.setHeader('Cache-Control', 'public, max-age=86400'); // Cache for 24h
+        if (typeof s3Obj.body.pipe === 'function') {
+            s3Obj.body.pipe(res);
+        }
+        else {
+            const bytes = await s3Obj.body.transformToByteArray();
+            res.send(Buffer.from(bytes));
+        }
+    }
+    catch (err) {
+        console.error('Error proxying asset:', err);
+        res.status(500).send('Failed to fetch asset');
     }
 });
 /**

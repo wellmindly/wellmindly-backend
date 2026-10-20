@@ -5,6 +5,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.normalizeDomain = normalizeDomain;
 exports.normalizeEmail = normalizeEmail;
+exports.ensureDatabaseTables = ensureDatabaseTables;
 exports.getAllowedDomains = getAllowedDomains;
 exports.getBypassEmails = getBypassEmails;
 exports.addAllowedDomain = addAllowedDomain;
@@ -111,21 +112,74 @@ function writeLocalData(data) {
         console.error('[AccessControl] Failed to write access-control.json:', err);
     }
 }
+let dbTablesInitialized = false;
+/**
+ * Ensures AllowedUniversityDomain and BypassEmail tables exist in PostgreSQL
+ * and synchronizes initial seeds/data into the database.
+ */
+async function ensureDatabaseTables() {
+    if (dbTablesInitialized)
+        return;
+    try {
+        await prisma_1.default.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS "AllowedUniversityDomain" (
+        "id" TEXT PRIMARY KEY,
+        "domain" TEXT UNIQUE NOT NULL,
+        "name" TEXT,
+        "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+        await prisma_1.default.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS "BypassEmail" (
+        "id" TEXT PRIMARY KEY,
+        "email" TEXT UNIQUE NOT NULL,
+        "note" TEXT,
+        "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+        dbTablesInitialized = true;
+        // Sync any existing local items into the PostgreSQL database so no entries are lost
+        const local = readLocalData();
+        const prismaAny = prisma_1.default;
+        if (prismaAny.allowedUniversityDomain) {
+            for (const d of local.domains) {
+                await prismaAny.allowedUniversityDomain.upsert({
+                    where: { domain: d.domain.toLowerCase() },
+                    update: { name: d.name },
+                    create: { id: d.id, domain: d.domain.toLowerCase(), name: d.name },
+                }).catch(() => { });
+            }
+        }
+        if (prismaAny.bypassEmail) {
+            for (const b of local.bypassEmails) {
+                await prismaAny.bypassEmail.upsert({
+                    where: { email: b.email.toLowerCase() },
+                    update: { note: b.note },
+                    create: { id: b.id, email: b.email.toLowerCase(), note: b.note },
+                }).catch(() => { });
+            }
+        }
+    }
+    catch (err) {
+        console.warn('[AccessControl] DB table auto-init notice:', err.message || err);
+    }
+}
 /**
  * Retrieve all allowed university domains.
- * Attempts DB retrieval if model exists, seamlessly merged with local storage.
+ * Primary source is PostgreSQL, perfectly merged with local cache.
  */
 async function getAllowedDomains() {
+    await ensureDatabaseTables();
     const local = readLocalData().domains;
     try {
-        // Check if AllowedUniversityDomain model is available on prisma instance
         const prismaAny = prisma_1.default;
         if (prismaAny.allowedUniversityDomain) {
             const dbDomains = await prismaAny.allowedUniversityDomain.findMany({
                 orderBy: { createdAt: 'desc' },
             });
             if (Array.isArray(dbDomains) && dbDomains.length > 0) {
-                // Merge DB and local without duplicates
                 const map = new Map();
                 for (const item of local) {
                     map.set(item.domain.toLowerCase(), item);
@@ -138,19 +192,26 @@ async function getAllowedDomains() {
                         createdAt: d.createdAt?.toISOString?.() || String(d.createdAt),
                     });
                 }
-                return Array.from(map.values());
+                const result = Array.from(map.values());
+                // Keep local cache in sync with DB
+                const data = readLocalData();
+                data.domains = result;
+                writeLocalData(data);
+                return result;
             }
         }
     }
-    catch {
-        // DB not available or table not migrated yet; gracefully fallback
+    catch (err) {
+        console.warn('[AccessControl] DB query for allowed domains failed, using local fallback:', err.message || err);
     }
     return local;
 }
 /**
  * Retrieve all bypass student emails.
+ * Primary source is PostgreSQL, perfectly merged with local cache.
  */
 async function getBypassEmails() {
+    await ensureDatabaseTables();
     const local = readLocalData().bypassEmails;
     try {
         const prismaAny = prisma_1.default;
@@ -171,23 +232,30 @@ async function getBypassEmails() {
                         createdAt: b.createdAt?.toISOString?.() || String(b.createdAt),
                     });
                 }
-                return Array.from(map.values());
+                const result = Array.from(map.values());
+                // Keep local cache in sync with DB
+                const data = readLocalData();
+                data.bypassEmails = result;
+                writeLocalData(data);
+                return result;
             }
         }
     }
-    catch {
-        // DB fallback
+    catch (err) {
+        console.warn('[AccessControl] DB query for bypass emails failed, using local fallback:', err.message || err);
     }
     return local;
 }
 /**
  * Add a new allowed university domain.
+ * Directly persists to PostgreSQL and local cache.
  */
 async function addAllowedDomain(rawDomain, name) {
     const cleanDomain = normalizeDomain(rawDomain);
     if (!cleanDomain) {
         throw new Error('A valid domain name is required (e.g. ves.ac.in or @ves.ac.in)');
     }
+    await ensureDatabaseTables();
     const data = readLocalData();
     const existing = data.domains.find(d => d.domain.toLowerCase() === cleanDomain);
     if (existing) {
@@ -201,7 +269,7 @@ async function addAllowedDomain(rawDomain, name) {
     };
     data.domains.unshift(newItem);
     writeLocalData(data);
-    // Attempt DB persistence in background
+    // Directly persist to PostgreSQL
     try {
         const prismaAny = prisma_1.default;
         if (prismaAny.allowedUniversityDomain) {
@@ -223,9 +291,11 @@ async function addAllowedDomain(rawDomain, name) {
 }
 /**
  * Remove an allowed university domain by ID or domain string.
+ * Deletes from PostgreSQL and local cache.
  */
 async function deleteAllowedDomain(idOrDomain) {
     const clean = normalizeDomain(idOrDomain);
+    await ensureDatabaseTables();
     const data = readLocalData();
     const initialLen = data.domains.length;
     data.domains = data.domains.filter(d => d.id !== idOrDomain && d.domain.toLowerCase() !== clean);
@@ -233,7 +303,7 @@ async function deleteAllowedDomain(idOrDomain) {
     if (removed) {
         writeLocalData(data);
     }
-    // Attempt DB deletion
+    // Delete from PostgreSQL
     try {
         const prismaAny = prisma_1.default;
         if (prismaAny.allowedUniversityDomain) {
@@ -244,19 +314,21 @@ async function deleteAllowedDomain(idOrDomain) {
             });
         }
     }
-    catch {
-        // Ignore DB error
+    catch (dbErr) {
+        console.warn('[AccessControl] DB deletion failed:', dbErr);
     }
     return removed;
 }
 /**
  * Add a bypass student email.
+ * Directly persists to PostgreSQL and local cache.
  */
 async function addBypassEmail(rawEmail, note) {
     const cleanEmail = normalizeEmail(rawEmail);
     if (!cleanEmail || !cleanEmail.includes('@')) {
         throw new Error('A valid email address is required (e.g. user@gmail.com)');
     }
+    await ensureDatabaseTables();
     const data = readLocalData();
     const existing = data.bypassEmails.find(b => b.email.toLowerCase() === cleanEmail);
     if (existing) {
@@ -270,7 +342,7 @@ async function addBypassEmail(rawEmail, note) {
     };
     data.bypassEmails.unshift(newItem);
     writeLocalData(data);
-    // Attempt DB persistence
+    // Directly persist to PostgreSQL
     try {
         const prismaAny = prisma_1.default;
         if (prismaAny.bypassEmail) {
@@ -292,9 +364,11 @@ async function addBypassEmail(rawEmail, note) {
 }
 /**
  * Remove a bypass email by ID or email string.
+ * Deletes from PostgreSQL and local cache.
  */
 async function deleteBypassEmail(idOrEmail) {
     const clean = normalizeEmail(idOrEmail);
+    await ensureDatabaseTables();
     const data = readLocalData();
     const initialLen = data.bypassEmails.length;
     data.bypassEmails = data.bypassEmails.filter(b => b.id !== idOrEmail && b.email.toLowerCase() !== clean);
@@ -302,7 +376,7 @@ async function deleteBypassEmail(idOrEmail) {
     if (removed) {
         writeLocalData(data);
     }
-    // Attempt DB deletion
+    // Delete from PostgreSQL
     try {
         const prismaAny = prisma_1.default;
         if (prismaAny.bypassEmail) {
@@ -313,8 +387,8 @@ async function deleteBypassEmail(idOrEmail) {
             });
         }
     }
-    catch {
-        // Ignore DB error
+    catch (dbErr) {
+        console.warn('[AccessControl] DB deletion failed:', dbErr);
     }
     return removed;
 }

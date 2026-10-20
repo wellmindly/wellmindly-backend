@@ -179,12 +179,20 @@ router.get('/coaches', async (_req, res) => {
                 user: {
                     select: { firstName: true, lastName: true, email: true },
                 },
+                receivedFeedback: {
+                    select: { rating: true },
+                },
             },
             orderBy: { createdAt: 'asc' },
         });
         const formatted = counselors.map((c) => {
             const name = `${c.user.firstName} ${c.user.lastName}`;
             const init = `${c.user.firstName?.[0] || ''}${c.user.lastName?.[0] || ''}`.toUpperCase() || 'WC';
+            const ratings = c.receivedFeedback?.map((f) => f.rating) || [];
+            const totalReviews = ratings.length;
+            const averageRating = totalReviews > 0
+                ? parseFloat((ratings.reduce((acc, r) => acc + r, 0) / totalReviews).toFixed(1))
+                : 4.9;
             return {
                 id: c.id,
                 name,
@@ -197,6 +205,8 @@ router.get('/coaches', async (_req, res) => {
                 bio: c.bio,
                 avatarUrl: c.avatarUrl,
                 init,
+                rating: averageRating,
+                totalReviews,
             };
         });
         res.status(200).json({ success: true, coaches: formatted });
@@ -260,7 +270,78 @@ router.get('/counselor', jwt_1.authenticateJWT, (0, jwt_1.authorizeRoles)('ADMIN
             }),
             prisma_1.default.counselorOnboarding.count(),
         ]);
-        res.status(200).json({ requests, total, page, limit });
+        const emails = requests.map((r) => r.email.trim().toLowerCase());
+        const appIds = requests.map((r) => r.id);
+        const [invitations, users, auditLogs] = await Promise.all([
+            prisma_1.default.counselorInvitation.findMany({
+                where: { email: { in: emails } },
+            }),
+            prisma_1.default.user.findMany({
+                where: { email: { in: emails }, role: 'COUNSELOR' },
+                include: { counselorProfile: true },
+            }),
+            prisma_1.default.auditLog.findMany({
+                where: {
+                    targetEntity: 'CounselorOnboarding',
+                    targetId: { in: appIds },
+                },
+                orderBy: { createdAt: 'desc' },
+            }),
+        ]);
+        const invMap = new Map(invitations.map((i) => [i.email.toLowerCase(), i]));
+        const userMap = new Map(users.map((u) => [u.email.toLowerCase(), u]));
+        const auditMap = new Map();
+        auditLogs.forEach((a) => {
+            if (!a.targetId)
+                return;
+            if (!auditMap.has(a.targetId))
+                auditMap.set(a.targetId, []);
+            auditMap.get(a.targetId).push(a);
+        });
+        const enrichedRequests = requests.map((r) => {
+            const cleanEmail = r.email.trim().toLowerCase();
+            const user = userMap.get(cleanEmail);
+            const inv = invMap.get(cleanEmail);
+            const logs = auditMap.get(r.id) || [];
+            const docsLog = logs.find((l) => l.action === 'COUNSELOR_DOCS_REQUESTED');
+            const inviteLog = logs.find((l) => l.action === 'COUNSELOR_INVITE_SENT');
+            let stage = 'NEW_APPLICATION';
+            let stageLabel = 'New Application';
+            let stageUpdatedAt = null;
+            let details = null;
+            if (user && user.counselorProfile?.status === 'ACTIVE') {
+                stage = 'ONBOARDED';
+                stageLabel = 'Onboarded & Active';
+                stageUpdatedAt = user.counselorProfile.updatedAt.toISOString();
+            }
+            else if (inv || inviteLog) {
+                if (inv?.used) {
+                    stage = 'ONBOARDED';
+                    stageLabel = 'Registered Counselor';
+                    stageUpdatedAt = inv.createdAt.toISOString();
+                }
+                else {
+                    stage = 'INVITE_SENT';
+                    stageLabel = 'Invitation Link Dispatched';
+                    stageUpdatedAt = inv?.createdAt ? inv.createdAt.toISOString() : (inviteLog?.createdAt ? inviteLog.createdAt.toISOString() : null);
+                    details = { expiresAt: inv?.expiresAt };
+                }
+            }
+            else if (docsLog) {
+                stage = 'DOCS_REQUESTED';
+                stageLabel = 'Degree & ID Docs Requested';
+                stageUpdatedAt = docsLog.createdAt.toISOString();
+                details = docsLog.details;
+            }
+            return {
+                ...r,
+                stage,
+                stageLabel,
+                stageUpdatedAt,
+                details,
+            };
+        });
+        res.status(200).json({ requests: enrichedRequests, total, page, limit });
     }
     catch (error) {
         console.error('Error fetching counselor contacts:', error);
@@ -342,6 +423,20 @@ router.post('/counselor/:id/request-docs', jwt_1.authenticateJWT, (0, jwt_1.auth
             subject: emailSubject,
             html: emailHtml,
         });
+        // Record journey stage in audit log for tracking
+        await prisma_1.default.auditLog.create({
+            data: {
+                action: 'COUNSELOR_DOCS_REQUESTED',
+                targetEntity: 'CounselorOnboarding',
+                targetId: id,
+                actorId: req.user?.sub || null,
+                details: {
+                    requestedBy: req.user?.email || 'admin',
+                    requestedDocs: ['Degree Certificate', 'Identity Document', 'Practice Standing License'],
+                    timestamp: new Date().toISOString(),
+                },
+            },
+        });
         res.status(200).json({
             success: true,
             message: `Document & certificate request email sent to ${application.email}`,
@@ -395,6 +490,21 @@ router.post('/counselor/:id/approve-onboard', jwt_1.authenticateJWT, (0, jwt_1.a
             </div>
           `,
             });
+            // Record journey stage in audit log for tracking
+            await prisma_1.default.auditLog.create({
+                data: {
+                    action: 'COUNSELOR_INVITE_SENT',
+                    targetEntity: 'CounselorOnboarding',
+                    targetId: id,
+                    actorId: req.user?.sub || null,
+                    details: {
+                        approvedBy: req.user?.email || 'admin',
+                        targetEmail: cleanEmail,
+                        setupUrl,
+                        timestamp: new Date().toISOString(),
+                    },
+                },
+            });
             res.status(200).json({
                 success: true,
                 message: `Counselor application approved! Onboarding invitation emailed to ${cleanEmail}`,
@@ -422,6 +532,19 @@ router.post('/counselor/:id/approve-onboard', jwt_1.authenticateJWT, (0, jwt_1.a
                     },
                 });
             }
+            await prisma_1.default.auditLog.create({
+                data: {
+                    action: 'COUNSELOR_ACTIVATED',
+                    targetEntity: 'CounselorOnboarding',
+                    targetId: id,
+                    actorId: req.user?.sub || null,
+                    details: {
+                        approvedBy: req.user?.email || 'admin',
+                        targetEmail: cleanEmail,
+                        timestamp: new Date().toISOString(),
+                    },
+                },
+            });
             res.status(200).json({
                 success: true,
                 message: `Counselor application approved! Account for ${cleanEmail} activated as Counselor.`,

@@ -731,6 +731,7 @@ router.get('/moderation', jwt_1.authenticateJWT, (0, jwt_1.authorizeRoles)('ADMI
                     { isReported: true },
                     { status: enums_1.TalkStatus.FLAGGED },
                     { status: enums_1.TalkStatus.PENDING },
+                    { status: enums_1.TalkStatus.REJECTED },
                 ],
             },
             orderBy: { createdAt: 'desc' },
@@ -744,6 +745,7 @@ router.get('/moderation', jwt_1.authenticateJWT, (0, jwt_1.authorizeRoles)('ADMI
                 OR: [
                     { status: enums_1.TalkStatus.FLAGGED },
                     { status: enums_1.TalkStatus.PENDING },
+                    { status: enums_1.TalkStatus.REJECTED },
                 ],
             },
             orderBy: { createdAt: 'desc' },

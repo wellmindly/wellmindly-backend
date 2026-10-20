@@ -826,6 +826,7 @@ router.get(
             { isReported: true },
             { status: TalkStatus.FLAGGED },
             { status: TalkStatus.PENDING },
+            { status: TalkStatus.REJECTED },
           ],
         },
         orderBy: { createdAt: 'desc' },
@@ -840,6 +841,7 @@ router.get(
           OR: [
             { status: TalkStatus.FLAGGED },
             { status: TalkStatus.PENDING },
+            { status: TalkStatus.REJECTED },
           ],
         },
         orderBy: { createdAt: 'desc' },

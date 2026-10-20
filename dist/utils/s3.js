@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.uploadToS3 = uploadToS3;
+exports.getS3Object = getS3Object;
 const client_s3_1 = require("@aws-sdk/client-s3");
 const env_1 = require("../config/env");
 const region = env_1.env.AWS_REGION || 'us-east-1';
@@ -52,5 +53,25 @@ async function uploadToS3(buffer, originalName, mimeType, folder = 'avatars') {
             url: fallbackUrl,
             key,
         };
+    }
+}
+/**
+ * Fetch an object directly from S3 using AWS SDK
+ */
+async function getS3Object(key) {
+    try {
+        const command = new client_s3_1.GetObjectCommand({
+            Bucket: bucketName,
+            Key: key,
+        });
+        const res = await s3Client.send(command);
+        return {
+            body: res.Body,
+            contentType: res.ContentType,
+        };
+    }
+    catch (error) {
+        console.error(`❌ Failed to get S3 object '${key}':`, error);
+        return null;
     }
 }

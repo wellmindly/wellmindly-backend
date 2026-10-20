@@ -9,7 +9,7 @@ import { sendSuccess, sendError } from '../../utils/response';
 import { queueEmail } from '../../utils/emailQueue';
 import { sendEmail, getPasswordResetLinkTemplate } from '../../utils/mailer';
 import { logAuditEvent } from '../../utils/auditLogger';
-import { uploadToS3 } from '../../utils/s3';
+import { uploadToS3, getS3Object } from '../../utils/s3';
 import { escapeHtml } from '../../utils/escapeHtml';
 
 const router = Router();
@@ -458,6 +458,14 @@ router.post('/me/upload', authenticateJWT, requireRoles(['COUNSELOR', 'ADMIN', '
 
     const result = await uploadToS3(buffer, name, type, folder || 'avatars');
 
+    const userId = req.user?.sub;
+    if (userId) {
+      await prisma.counselorProfile.updateMany({
+        where: { userId },
+        data: { avatarUrl: result.url },
+      });
+    }
+
     sendSuccess(res, {
       message: 'File uploaded to AWS S3 successfully',
       url: result.url,
@@ -466,6 +474,35 @@ router.post('/me/upload', authenticateJWT, requireRoles(['COUNSELOR', 'ADMIN', '
   } catch (error) {
     console.error('Error uploading file to S3:', error);
     sendError(res, 'UPLOAD_FAILED', 'Failed to upload file to S3', 500);
+  }
+});
+
+/**
+ * GET /api/v1/counselors/assets/:folder/:filename
+ * Public proxy to stream S3 images even when direct bucket access is private
+ */
+router.get('/assets/:folder/:filename', async (req: Request, res: Response) => {
+  try {
+    const { folder, filename } = req.params;
+    const key = `${folder}/${filename}`;
+    const s3Obj = await getS3Object(key);
+    if (!s3Obj || !s3Obj.body) {
+      res.status(404).send('Asset not found');
+      return;
+    }
+
+    res.setHeader('Content-Type', s3Obj.contentType || 'image/png');
+    res.setHeader('Cache-Control', 'public, max-age=86400'); // Cache for 24h
+
+    if (typeof s3Obj.body.pipe === 'function') {
+      s3Obj.body.pipe(res);
+    } else {
+      const bytes = await s3Obj.body.transformToByteArray();
+      res.send(Buffer.from(bytes));
+    }
+  } catch (err) {
+    console.error('Error proxying asset:', err);
+    res.status(500).send('Failed to fetch asset');
   }
 });
 
