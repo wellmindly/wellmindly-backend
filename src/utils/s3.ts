@@ -30,6 +30,9 @@ export interface UploadResult {
  * @param mimeType - File MIME type (e.g. image/png, image/jpeg)
  * @param folder - Destination folder prefix in bucket (defaults to 'avatars')
  */
+import fs from 'fs';
+import path from 'path';
+
 export async function uploadToS3(
   buffer: Buffer,
   originalName: string,
@@ -40,39 +43,43 @@ export async function uploadToS3(
   const timestamp = Date.now();
   const key = `${folder}/${timestamp}-${safeName}`;
 
+  // Always save locally to uploads/ as reliable local storage & fallback
   try {
-    const command = new PutObjectCommand({
-      Bucket: bucketName,
-      Key: key,
-      Body: buffer,
-      ContentType: mimeType,
-    });
-
-    await s3Client.send(command);
-
-    const publicUrl = `https://${bucketName}.s3.${region}.amazonaws.com/${key}`;
-    console.log(`✅ Uploaded file to S3: ${publicUrl}`);
-
-    return {
-      url: publicUrl,
-      key,
-    };
-  } catch (error) {
-    console.error(`❌ S3 Upload failed for key '${key}':`, error);
-    // If S3 fails, fallback to base64 Data URI so counselor image still displays
-    if (buffer.length < 3 * 1024 * 1024) {
-      const dataUrl = `data:${mimeType || 'image/png'};base64,${buffer.toString('base64')}`;
-      return {
-        url: dataUrl,
-        key,
-      };
+    const localDir = path.join(process.cwd(), 'uploads', folder);
+    if (!fs.existsSync(localDir)) {
+      fs.mkdirSync(localDir, { recursive: true });
     }
-    const fallbackUrl = `https://${bucketName}.s3.${region}.amazonaws.com/${key}`;
-    return {
-      url: fallbackUrl,
-      key,
-    };
+    const localFilePath = path.join(localDir, `${timestamp}-${safeName}`);
+    fs.writeFileSync(localFilePath, buffer);
+    console.log(`✅ Saved local asset fallback to: ${localFilePath}`);
+  } catch (localErr) {
+    console.warn('⚠️ Could not save local asset copy:', localErr);
   }
+
+  // Use the public proxy endpoint so direct S3 private permissions never block browsers
+  const proxyUrl = `/api/v1/counselors/assets/${key}`;
+
+  // If AWS credentials exist, also sync to S3 bucket
+  if (env.AWS_ACCESS_KEY_ID && env.AWS_SECRET_ACCESS_KEY) {
+    try {
+      const command = new PutObjectCommand({
+        Bucket: bucketName,
+        Key: key,
+        Body: buffer,
+        ContentType: mimeType,
+      });
+
+      await s3Client.send(command);
+      console.log(`✅ Uploaded file to S3: ${key}`);
+    } catch (error) {
+      console.warn(`❌ S3 Upload failed for key '${key}', using local storage:`, error);
+    }
+  }
+
+  return {
+    url: proxyUrl,
+    key,
+  };
 }
 
 /**

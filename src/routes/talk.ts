@@ -6,21 +6,50 @@ import { TalkStatus, ReactionType } from '../generated/prisma/enums';
 
 const router = Router();
 
-async function moderateBeforeCreate(_content: string): Promise<{
+async function moderateBeforeCreate(content: string): Promise<{
   status: TalkStatus;
   moderationReason: string | null;
   isCrisis: boolean;
   inputTokens: number;
   outputTokens: number;
 }> {
-  // TalkMindly safety check is disabled per admin instructions
-  return {
-    status: TalkStatus.APPROVED,
-    moderationReason: null,
-    isCrisis: false,
-    inputTokens: 0,
-    outputTokens: 0,
-  };
+  try {
+    const safety = await evaluateContentSafety(content);
+    if (safety.isCrisis) {
+      return {
+        status: TalkStatus.FLAGGED,
+        moderationReason: safety.reason || 'Safety alert: Crisis content detected. Pending clinical team review.',
+        isCrisis: true,
+        inputTokens: safety.inputTokens,
+        outputTokens: safety.outputTokens,
+      };
+    }
+    if (!safety.isSafe) {
+      return {
+        status: TalkStatus.REJECTED,
+        moderationReason: safety.reason || 'Content violates community safety guidelines.',
+        isCrisis: false,
+        inputTokens: safety.inputTokens,
+        outputTokens: safety.outputTokens,
+      };
+    }
+    return {
+      status: TalkStatus.APPROVED,
+      moderationReason: null,
+      isCrisis: false,
+      inputTokens: safety.inputTokens,
+      outputTokens: safety.outputTokens,
+    };
+  } catch (err) {
+    console.error('[moderateBeforeCreate] error:', err);
+    return {
+      status: TalkStatus.APPROVED,
+      moderationReason: null,
+      isCrisis: false,
+      inputTokens: 0,
+      outputTokens: 0,
+    };
+  }
 }
 
 // ==========================================

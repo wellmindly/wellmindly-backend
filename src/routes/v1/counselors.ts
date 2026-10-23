@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 import { Router, Request, Response } from 'express';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
@@ -11,6 +13,15 @@ import { sendEmail, getPasswordResetLinkTemplate } from '../../utils/mailer';
 import { logAuditEvent } from '../../utils/auditLogger';
 import { uploadToS3, getS3Object } from '../../utils/s3';
 import { escapeHtml } from '../../utils/escapeHtml';
+
+export function normalizeAvatarUrl(url?: string | null): string | null {
+  if (!url) return null;
+  if (url.includes('.amazonaws.com/')) {
+    const key = url.split('.amazonaws.com/')[1];
+    if (key) return `/api/v1/counselors/assets/${key}`;
+  }
+  return url;
+}
 
 const router = Router();
 
@@ -375,6 +386,56 @@ router.post('/reset-password', async (req: Request, res: Response) => {
   }
 });
 
+/**
+ * GET /api/v1/counselors/assets/:folder/:filename
+ * Public proxy to stream avatars and counselor images without requiring authentication or public S3 bucket
+ */
+router.get('/assets/:folder/:filename', async (req: Request, res: Response) => {
+  try {
+    const rawFolder = Array.isArray(req.params.folder) ? req.params.folder[0] : req.params.folder;
+    const rawFilename = Array.isArray(req.params.filename) ? req.params.filename[0] : req.params.filename;
+    const safeFolder = String(rawFolder || 'avatars').replace(/[^a-zA-Z0-9_-]/g, '');
+    const safeFilename = String(rawFilename || '').replace(/[^a-zA-Z0-9._-]/g, '');
+    const key = `${safeFolder}/${safeFilename}`;
+
+    // 1. Try local disk storage first (fast, reliable, works offline and in local dev)
+    const localPath = path.join(process.cwd(), 'uploads', safeFolder, safeFilename);
+    if (fs.existsSync(localPath)) {
+      const ext = path.extname(safeFilename).toLowerCase();
+      const mimeMap: Record<string, string> = {
+        '.png': 'image/png',
+        '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg',
+        '.webp': 'image/webp',
+        '.gif': 'image/gif',
+        '.svg': 'image/svg+xml',
+      };
+      res.setHeader('Content-Type', mimeMap[ext] || 'image/png');
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      return fs.createReadStream(localPath).pipe(res);
+    }
+
+    // 2. Fetch from AWS S3 using server-side credentials
+    const s3Obj = await getS3Object(key);
+    if (s3Obj && s3Obj.body) {
+      res.setHeader('Content-Type', s3Obj.contentType || 'image/png');
+      res.setHeader('Cache-Control', 'public, max-age=86400'); // Cache for 24h
+
+      if (typeof s3Obj.body.pipe === 'function') {
+        return s3Obj.body.pipe(res);
+      } else {
+        const bytes = await s3Obj.body.transformToByteArray();
+        return res.send(Buffer.from(bytes));
+      }
+    }
+
+    res.status(404).send('Asset not found');
+  } catch (err) {
+    console.error('Error proxying asset:', err);
+    res.status(500).send('Failed to fetch asset');
+  }
+});
+
 // Protected routes below
 router.use(authenticateJWT, requireRoles(['COUNSELOR', 'ADMIN', 'SUPER_ADMIN']));
 
@@ -398,6 +459,7 @@ router.get('/me/profile', async (req: AuthenticatedRequest, res: Response) => {
     return;
   }
 
+  profile.avatarUrl = normalizeAvatarUrl(profile.avatarUrl);
   sendSuccess(res, profile);
 });
 
@@ -432,6 +494,7 @@ router.put('/me/profile', async (req: AuthenticatedRequest, res: Response) => {
     include: { user: true },
   });
 
+  updatedProfile.avatarUrl = normalizeAvatarUrl(updatedProfile.avatarUrl);
   sendSuccess(res, updatedProfile);
 });
 
@@ -467,42 +530,13 @@ router.post('/me/upload', authenticateJWT, requireRoles(['COUNSELOR', 'ADMIN', '
     }
 
     sendSuccess(res, {
-      message: 'File uploaded to AWS S3 successfully',
+      message: 'File uploaded successfully',
       url: result.url,
       key: result.key,
     });
   } catch (error) {
     console.error('Error uploading file to S3:', error);
     sendError(res, 'UPLOAD_FAILED', 'Failed to upload file to S3', 500);
-  }
-});
-
-/**
- * GET /api/v1/counselors/assets/:folder/:filename
- * Public proxy to stream S3 images even when direct bucket access is private
- */
-router.get('/assets/:folder/:filename', async (req: Request, res: Response) => {
-  try {
-    const { folder, filename } = req.params;
-    const key = `${folder}/${filename}`;
-    const s3Obj = await getS3Object(key);
-    if (!s3Obj || !s3Obj.body) {
-      res.status(404).send('Asset not found');
-      return;
-    }
-
-    res.setHeader('Content-Type', s3Obj.contentType || 'image/png');
-    res.setHeader('Cache-Control', 'public, max-age=86400'); // Cache for 24h
-
-    if (typeof s3Obj.body.pipe === 'function') {
-      s3Obj.body.pipe(res);
-    } else {
-      const bytes = await s3Obj.body.transformToByteArray();
-      res.send(Buffer.from(bytes));
-    }
-  } catch (err) {
-    console.error('Error proxying asset:', err);
-    res.status(500).send('Failed to fetch asset');
   }
 });
 

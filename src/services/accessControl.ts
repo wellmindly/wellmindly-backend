@@ -22,6 +22,7 @@ interface AccessControlData {
 }
 
 const DATA_FILE_PATH = path.resolve(__dirname, '../../data/access-control.json');
+const BACKUP_FILE_PATH = path.resolve(__dirname, '../../data/access-control.backup.json');
 
 /**
  * Normalizes a domain string:
@@ -50,71 +51,97 @@ export function normalizeEmail(rawEmail: string): string {
 }
 
 /**
- * Read data from local JSON storage with safe fallback.
+ * Read data from local JSON storage with safe fallback and backup merge.
  */
 function readLocalData(): AccessControlData {
+  const defaultInitial: AccessControlData = {
+    domains: [
+      {
+        id: 'dom_ves_ac_in',
+        domain: 'ves.ac.in',
+        name: 'VES College (VESIT / VES)',
+        createdAt: '2026-10-20T00:00:00.000Z',
+      },
+    ],
+    bypassEmails: [
+      {
+        id: 'byp_jmalani54',
+        email: 'jmalani54@gmail.com',
+        note: 'Admin Test / VIP Bypass Access',
+        createdAt: '2026-10-20T00:00:00.000Z',
+      },
+    ],
+  };
+
+  let primary: AccessControlData = { domains: [], bypassEmails: [] };
+  let hasPrimary = false;
+
   try {
-    if (!fs.existsSync(DATA_FILE_PATH)) {
-      const initial: AccessControlData = {
-        domains: [
-          {
-            id: 'dom_ves_ac_in',
-            domain: 'ves.ac.in',
-            name: 'VES College (VESIT / VES)',
-            createdAt: new Date().toISOString(),
-          },
-        ],
-        bypassEmails: [
-          {
-            id: 'byp_jmalani54',
-            email: 'jmalani54@gmail.com',
-            note: 'Admin Test / VIP Bypass Access',
-            createdAt: new Date().toISOString(),
-          },
-        ],
+    if (fs.existsSync(DATA_FILE_PATH)) {
+      const raw = fs.readFileSync(DATA_FILE_PATH, 'utf-8');
+      const parsed = JSON.parse(raw);
+      primary = {
+        domains: Array.isArray(parsed.domains) ? parsed.domains : [],
+        bypassEmails: Array.isArray(parsed.bypassEmails) ? parsed.bypassEmails : [],
       };
-      fs.mkdirSync(path.dirname(DATA_FILE_PATH), { recursive: true });
-      fs.writeFileSync(DATA_FILE_PATH, JSON.stringify(initial, null, 2), 'utf-8');
-      return initial;
+      hasPrimary = true;
     }
-    const raw = fs.readFileSync(DATA_FILE_PATH, 'utf-8');
-    const parsed = JSON.parse(raw);
-    return {
-      domains: Array.isArray(parsed.domains) ? parsed.domains : [],
-      bypassEmails: Array.isArray(parsed.bypassEmails) ? parsed.bypassEmails : [],
-    };
   } catch (err) {
-    console.warn('[AccessControl] Failed to read access-control.json, using in-memory fallback:', err);
-    return {
-      domains: [
-        {
-          id: 'dom_ves_ac_in',
-          domain: 'ves.ac.in',
-          name: 'VES College (VESIT / VES)',
-          createdAt: new Date().toISOString(),
-        },
-      ],
-      bypassEmails: [
-        {
-          id: 'byp_jmalani54',
-          email: 'jmalani54@gmail.com',
-          note: 'Admin Test / VIP Bypass Access',
-          createdAt: new Date().toISOString(),
-        },
-      ],
-    };
+    console.warn('[AccessControl] Failed reading DATA_FILE_PATH:', err);
   }
+
+  // Check backup file to ensure no data is ever lost across resets
+  let backup: AccessControlData = { domains: [], bypassEmails: [] };
+  try {
+    if (fs.existsSync(BACKUP_FILE_PATH)) {
+      const rawBackup = fs.readFileSync(BACKUP_FILE_PATH, 'utf-8');
+      const parsedBackup = JSON.parse(rawBackup);
+      backup = {
+        domains: Array.isArray(parsedBackup.domains) ? parsedBackup.domains : [],
+        bypassEmails: Array.isArray(parsedBackup.bypassEmails) ? parsedBackup.bypassEmails : [],
+      };
+    }
+  } catch (err) {
+    console.warn('[AccessControl] Failed reading BACKUP_FILE_PATH:', err);
+  }
+
+  // Merge primary and backup by unique domain / email
+  const domainMap = new Map<string, AllowedDomainItem>();
+  for (const d of defaultInitial.domains) domainMap.set(d.domain.toLowerCase(), d);
+  for (const d of backup.domains) domainMap.set(d.domain.toLowerCase(), d);
+  for (const d of primary.domains) domainMap.set(d.domain.toLowerCase(), d);
+
+  const emailMap = new Map<string, BypassEmailItem>();
+  for (const b of defaultInitial.bypassEmails) emailMap.set(b.email.toLowerCase(), b);
+  for (const b of backup.bypassEmails) emailMap.set(b.email.toLowerCase(), b);
+  for (const b of primary.bypassEmails) emailMap.set(b.email.toLowerCase(), b);
+
+  const merged: AccessControlData = {
+    domains: Array.from(domainMap.values()),
+    bypassEmails: Array.from(emailMap.values()),
+  };
+
+  if (!hasPrimary) {
+    try {
+      fs.mkdirSync(path.dirname(DATA_FILE_PATH), { recursive: true });
+      fs.writeFileSync(DATA_FILE_PATH, JSON.stringify(merged, null, 2), 'utf-8');
+      fs.writeFileSync(BACKUP_FILE_PATH, JSON.stringify(merged, null, 2), 'utf-8');
+    } catch {}
+  }
+
+  return merged;
 }
 
 /**
- * Write updated data to local JSON storage.
+ * Write updated data to local JSON storage and backup file.
  */
 function writeLocalData(data: AccessControlData): void {
   try {
     fs.mkdirSync(path.dirname(DATA_FILE_PATH), { recursive: true });
     fs.writeFileSync(DATA_FILE_PATH, JSON.stringify(data, null, 2), 'utf-8');
+    fs.writeFileSync(BACKUP_FILE_PATH, JSON.stringify(data, null, 2), 'utf-8');
   } catch (err) {
-    console.error('[AccessControl] Failed to write access-control.json:', err);
+    console.error('[AccessControl] Failed to write access-control files:', err);
   }
 }
 
@@ -122,7 +149,7 @@ let dbTablesInitialized = false;
 
 /**
  * Ensures AllowedUniversityDomain and BypassEmail tables exist in PostgreSQL
- * and synchronizes initial seeds/data into the database.
+ * and synchronizes initial seeds/data into the database without overwriting.
  */
 export async function ensureDatabaseTables(): Promise<void> {
   if (dbTablesInitialized) return;
@@ -147,28 +174,33 @@ export async function ensureDatabaseTables(): Promise<void> {
     `);
     dbTablesInitialized = true;
 
-    // Only seed initial default data if the database has ZERO records
+    // Synchronize all existing local domains and bypass emails into DB so DB has full records
+    const local = readLocalData();
     const prismaAny = prisma as any;
     if (prismaAny.allowedUniversityDomain) {
-      const count = await prismaAny.allowedUniversityDomain.count().catch(() => -1);
-      if (count === 0) {
-        await prismaAny.allowedUniversityDomain.create({
-          data: {
-            id: 'dom_ves_ac_in',
-            domain: 'ves.ac.in',
-            name: 'VES College (VESIT / VES)',
+      for (const d of local.domains) {
+        await prismaAny.allowedUniversityDomain.upsert({
+          where: { domain: d.domain },
+          update: { name: d.name },
+          create: {
+            id: d.id,
+            domain: d.domain,
+            name: d.name,
+            createdAt: new Date(d.createdAt || Date.now()),
           },
         }).catch(() => {});
       }
     }
     if (prismaAny.bypassEmail) {
-      const count = await prismaAny.bypassEmail.count().catch(() => -1);
-      if (count === 0) {
-        await prismaAny.bypassEmail.create({
-          data: {
-            id: 'byp_jmalani54',
-            email: 'jmalani54@gmail.com',
-            note: 'Admin Test / VIP Bypass Access',
+      for (const b of local.bypassEmails) {
+        await prismaAny.bypassEmail.upsert({
+          where: { email: b.email },
+          update: { note: b.note },
+          create: {
+            id: b.id,
+            email: b.email,
+            note: b.note,
+            createdAt: new Date(b.createdAt || Date.now()),
           },
         }).catch(() => {});
       }
@@ -180,10 +212,18 @@ export async function ensureDatabaseTables(): Promise<void> {
 
 /**
  * Retrieve all allowed university domains.
- * Primary source is PostgreSQL.
+ * Merges PostgreSQL records with local storage so no custom user domain is ever lost.
  */
 export async function getAllowedDomains(): Promise<AllowedDomainItem[]> {
   await ensureDatabaseTables();
+  const localData = readLocalData();
+  const mergedMap = new Map<string, AllowedDomainItem>();
+
+  // Add local entries first
+  for (const d of localData.domains) {
+    mergedMap.set(d.domain.toLowerCase(), d);
+  }
+
   try {
     const prismaAny = prisma as any;
     if (prismaAny.allowedUniversityDomain) {
@@ -191,31 +231,41 @@ export async function getAllowedDomains(): Promise<AllowedDomainItem[]> {
         orderBy: { createdAt: 'desc' },
       });
       if (Array.isArray(dbDomains)) {
-        const result: AllowedDomainItem[] = dbDomains.map((d: any) => ({
-          id: d.id,
-          domain: d.domain,
-          name: d.name || undefined,
-          createdAt: d.createdAt?.toISOString?.() || String(d.createdAt),
-        }));
-        // Update local file cache to reflect DB
-        const data = readLocalData();
-        data.domains = result;
-        writeLocalData(data);
-        return result;
+        for (const d of dbDomains) {
+          mergedMap.set(d.domain.toLowerCase(), {
+            id: d.id,
+            domain: d.domain,
+            name: d.name || undefined,
+            createdAt: d.createdAt?.toISOString?.() || String(d.createdAt),
+          });
+        }
       }
     }
   } catch (err: any) {
     console.warn('[AccessControl] DB query for allowed domains failed, using local fallback:', err.message || err);
   }
-  return readLocalData().domains;
+
+  const result = Array.from(mergedMap.values());
+  // Keep local storage & backup in sync with union
+  localData.domains = result;
+  writeLocalData(localData);
+  return result;
 }
 
 /**
  * Retrieve all bypass student emails.
- * Primary source is PostgreSQL.
+ * Merges PostgreSQL records with local storage so no custom bypass email is ever lost.
  */
 export async function getBypassEmails(): Promise<BypassEmailItem[]> {
   await ensureDatabaseTables();
+  const localData = readLocalData();
+  const mergedMap = new Map<string, BypassEmailItem>();
+
+  // Add local entries first
+  for (const b of localData.bypassEmails) {
+    mergedMap.set(b.email.toLowerCase(), b);
+  }
+
   try {
     const prismaAny = prisma as any;
     if (prismaAny.bypassEmail) {
@@ -223,23 +273,25 @@ export async function getBypassEmails(): Promise<BypassEmailItem[]> {
         orderBy: { createdAt: 'desc' },
       });
       if (Array.isArray(dbEmails)) {
-        const result: BypassEmailItem[] = dbEmails.map((b: any) => ({
-          id: b.id,
-          email: b.email,
-          note: b.note || undefined,
-          createdAt: b.createdAt?.toISOString?.() || String(b.createdAt),
-        }));
-        // Update local file cache to reflect DB
-        const data = readLocalData();
-        data.bypassEmails = result;
-        writeLocalData(data);
-        return result;
+        for (const b of dbEmails) {
+          mergedMap.set(b.email.toLowerCase(), {
+            id: b.id,
+            email: b.email,
+            note: b.note || undefined,
+            createdAt: b.createdAt?.toISOString?.() || String(b.createdAt),
+          });
+        }
       }
     }
   } catch (err: any) {
     console.warn('[AccessControl] DB query for bypass emails failed, using local fallback:', err.message || err);
   }
-  return readLocalData().bypassEmails;
+
+  const result = Array.from(mergedMap.values());
+  // Keep local storage & backup in sync with union
+  localData.bypassEmails = result;
+  writeLocalData(localData);
+  return result;
 }
 
 /**

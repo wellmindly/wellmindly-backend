@@ -1,4 +1,7 @@
 "use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.uploadToS3 = uploadToS3;
 exports.getS3Object = getS3Object;
@@ -26,41 +29,47 @@ const s3Client = new client_s3_1.S3Client({
  * @param mimeType - File MIME type (e.g. image/png, image/jpeg)
  * @param folder - Destination folder prefix in bucket (defaults to 'avatars')
  */
+const fs_1 = __importDefault(require("fs"));
+const path_1 = __importDefault(require("path"));
 async function uploadToS3(buffer, originalName, mimeType, folder = 'avatars') {
     const safeName = (originalName || `avatar_${Date.now()}.png`).replace(/[^a-zA-Z0-9._-]/g, '_');
     const timestamp = Date.now();
     const key = `${folder}/${timestamp}-${safeName}`;
+    // Always save locally to uploads/ as reliable local storage & fallback
     try {
-        const command = new client_s3_1.PutObjectCommand({
-            Bucket: bucketName,
-            Key: key,
-            Body: buffer,
-            ContentType: mimeType,
-        });
-        await s3Client.send(command);
-        const publicUrl = `https://${bucketName}.s3.${region}.amazonaws.com/${key}`;
-        console.log(`✅ Uploaded file to S3: ${publicUrl}`);
-        return {
-            url: publicUrl,
-            key,
-        };
-    }
-    catch (error) {
-        console.error(`❌ S3 Upload failed for key '${key}':`, error);
-        // If S3 fails, fallback to base64 Data URI so counselor image still displays
-        if (buffer.length < 3 * 1024 * 1024) {
-            const dataUrl = `data:${mimeType || 'image/png'};base64,${buffer.toString('base64')}`;
-            return {
-                url: dataUrl,
-                key,
-            };
+        const localDir = path_1.default.join(process.cwd(), 'uploads', folder);
+        if (!fs_1.default.existsSync(localDir)) {
+            fs_1.default.mkdirSync(localDir, { recursive: true });
         }
-        const fallbackUrl = `https://${bucketName}.s3.${region}.amazonaws.com/${key}`;
-        return {
-            url: fallbackUrl,
-            key,
-        };
+        const localFilePath = path_1.default.join(localDir, `${timestamp}-${safeName}`);
+        fs_1.default.writeFileSync(localFilePath, buffer);
+        console.log(`✅ Saved local asset fallback to: ${localFilePath}`);
     }
+    catch (localErr) {
+        console.warn('⚠️ Could not save local asset copy:', localErr);
+    }
+    // Use the public proxy endpoint so direct S3 private permissions never block browsers
+    const proxyUrl = `/api/v1/counselors/assets/${key}`;
+    // If AWS credentials exist, also sync to S3 bucket
+    if (env_1.env.AWS_ACCESS_KEY_ID && env_1.env.AWS_SECRET_ACCESS_KEY) {
+        try {
+            const command = new client_s3_1.PutObjectCommand({
+                Bucket: bucketName,
+                Key: key,
+                Body: buffer,
+                ContentType: mimeType,
+            });
+            await s3Client.send(command);
+            console.log(`✅ Uploaded file to S3: ${key}`);
+        }
+        catch (error) {
+            console.warn(`❌ S3 Upload failed for key '${key}', using local storage:`, error);
+        }
+    }
+    return {
+        url: proxyUrl,
+        key,
+    };
 }
 /**
  * Fetch an object directly from S3 using AWS SDK

@@ -215,7 +215,80 @@ const HARASSMENT_PATTERNS = [
  *   reason?: string
  * }
  */
-async function evaluateContentSafety(_content) {
-    // TalkMindly safety evaluation is disabled per admin instructions
+async function evaluateContentSafety(content) {
+    if (!content || !content.trim()) {
+        return { isSafe: true, isCrisis: false, inputTokens: 0, outputTokens: 0 };
+    }
+    // 1. Check Deterministic Crisis Patterns (immediate distress, self-harm, suicide)
+    for (const pattern of CRISIS_PATTERNS) {
+        if (pattern.test(content)) {
+            return {
+                isSafe: false,
+                isCrisis: true,
+                reason: 'Immediate safety or crisis keyword detected',
+                inputTokens: 0,
+                outputTokens: 0,
+            };
+        }
+    }
+    // 2. Check Deterministic Harassment / Inappropriate Patterns
+    for (const pattern of HARASSMENT_PATTERNS) {
+        if (pattern.test(content)) {
+            return {
+                isSafe: false,
+                isCrisis: false,
+                reason: 'Inappropriate or harmful language detected',
+                inputTokens: 0,
+                outputTokens: 0,
+            };
+        }
+    }
+    // 3. If Gemini is configured, run deeper semantic analysis
+    if (genAI) {
+        try {
+            const model = genAI.getGenerativeModel({
+                model: env_1.env.GEMINI_MODEL || 'gemini-2.5-flash',
+                generationConfig: {
+                    responseMimeType: 'application/json',
+                    temperature: 0.1,
+                },
+            });
+            const prompt = `You are a clinical safety and community moderation classifier for a university student mental health peer support wall.
+Analyze the following text submitted by a student.
+Evaluate for:
+1. isCrisis: true if the text expresses explicit intent, plans, or imminent thoughts of suicide, self-harm, severe violence, or immediate danger.
+2. isSafe: false if the text contains hate speech, severe harassment, sexually explicit solicitations, bullying, or illegal content.
+Otherwise, isSafe should be true and isCrisis should be false. Normal expressions of sadness, stress, anxiety, or overwhelm are SAFE (isSafe: true, isCrisis: false).
+
+Text to evaluate:
+"""${content}"""
+
+Return strictly a JSON object with this shape:
+{
+  "isSafe": boolean,
+  "isCrisis": boolean,
+  "reason": string
+}`;
+            const result = await model.generateContent(prompt);
+            const text = result.response.text();
+            const parsed = JSON.parse(text);
+            let inputTokens = 0;
+            let outputTokens = 0;
+            if (result.response.usageMetadata) {
+                inputTokens = result.response.usageMetadata.promptTokenCount || 0;
+                outputTokens = result.response.usageMetadata.candidatesTokenCount || 0;
+            }
+            return {
+                isSafe: typeof parsed.isSafe === 'boolean' ? parsed.isSafe : true,
+                isCrisis: typeof parsed.isCrisis === 'boolean' ? parsed.isCrisis : false,
+                reason: parsed.reason || undefined,
+                inputTokens,
+                outputTokens,
+            };
+        }
+        catch (err) {
+            console.warn('[evaluateContentSafety] Gemini semantic check failed, using heuristic results:', err.message || err);
+        }
+    }
     return { isSafe: true, isCrisis: false, inputTokens: 0, outputTokens: 0 };
 }

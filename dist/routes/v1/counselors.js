@@ -3,6 +3,9 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.normalizeAvatarUrl = normalizeAvatarUrl;
+const fs_1 = __importDefault(require("fs"));
+const path_1 = __importDefault(require("path"));
 const express_1 = require("express");
 const bcrypt_1 = __importDefault(require("bcrypt"));
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
@@ -16,6 +19,16 @@ const mailer_1 = require("../../utils/mailer");
 const auditLogger_1 = require("../../utils/auditLogger");
 const s3_1 = require("../../utils/s3");
 const escapeHtml_1 = require("../../utils/escapeHtml");
+function normalizeAvatarUrl(url) {
+    if (!url)
+        return null;
+    if (url.includes('.amazonaws.com/')) {
+        const key = url.split('.amazonaws.com/')[1];
+        if (key)
+            return `/api/v1/counselors/assets/${key}`;
+    }
+    return url;
+}
 const router = (0, express_1.Router)();
 /**
  * POST /api/v1/counselors/verify-invite
@@ -308,6 +321,53 @@ router.post('/reset-password', async (req, res) => {
         (0, response_1.sendError)(res, 'INVALID_TOKEN', 'Reset link is invalid or has already been used.', 400);
     }
 });
+/**
+ * GET /api/v1/counselors/assets/:folder/:filename
+ * Public proxy to stream avatars and counselor images without requiring authentication or public S3 bucket
+ */
+router.get('/assets/:folder/:filename', async (req, res) => {
+    try {
+        const rawFolder = Array.isArray(req.params.folder) ? req.params.folder[0] : req.params.folder;
+        const rawFilename = Array.isArray(req.params.filename) ? req.params.filename[0] : req.params.filename;
+        const safeFolder = String(rawFolder || 'avatars').replace(/[^a-zA-Z0-9_-]/g, '');
+        const safeFilename = String(rawFilename || '').replace(/[^a-zA-Z0-9._-]/g, '');
+        const key = `${safeFolder}/${safeFilename}`;
+        // 1. Try local disk storage first (fast, reliable, works offline and in local dev)
+        const localPath = path_1.default.join(process.cwd(), 'uploads', safeFolder, safeFilename);
+        if (fs_1.default.existsSync(localPath)) {
+            const ext = path_1.default.extname(safeFilename).toLowerCase();
+            const mimeMap = {
+                '.png': 'image/png',
+                '.jpg': 'image/jpeg',
+                '.jpeg': 'image/jpeg',
+                '.webp': 'image/webp',
+                '.gif': 'image/gif',
+                '.svg': 'image/svg+xml',
+            };
+            res.setHeader('Content-Type', mimeMap[ext] || 'image/png');
+            res.setHeader('Cache-Control', 'public, max-age=86400');
+            return fs_1.default.createReadStream(localPath).pipe(res);
+        }
+        // 2. Fetch from AWS S3 using server-side credentials
+        const s3Obj = await (0, s3_1.getS3Object)(key);
+        if (s3Obj && s3Obj.body) {
+            res.setHeader('Content-Type', s3Obj.contentType || 'image/png');
+            res.setHeader('Cache-Control', 'public, max-age=86400'); // Cache for 24h
+            if (typeof s3Obj.body.pipe === 'function') {
+                return s3Obj.body.pipe(res);
+            }
+            else {
+                const bytes = await s3Obj.body.transformToByteArray();
+                return res.send(Buffer.from(bytes));
+            }
+        }
+        res.status(404).send('Asset not found');
+    }
+    catch (err) {
+        console.error('Error proxying asset:', err);
+        res.status(500).send('Failed to fetch asset');
+    }
+});
 // Protected routes below
 router.use(rbac_1.authenticateJWT, (0, rbac_1.requireRoles)(['COUNSELOR', 'ADMIN', 'SUPER_ADMIN']));
 /**
@@ -328,6 +388,7 @@ router.get('/me/profile', async (req, res) => {
         (0, response_1.sendError)(res, 'NOT_FOUND', 'Counselor profile not found', 404);
         return;
     }
+    profile.avatarUrl = normalizeAvatarUrl(profile.avatarUrl);
     (0, response_1.sendSuccess)(res, profile);
 });
 /**
@@ -357,6 +418,7 @@ router.put('/me/profile', async (req, res) => {
         },
         include: { user: true },
     });
+    updatedProfile.avatarUrl = normalizeAvatarUrl(updatedProfile.avatarUrl);
     (0, response_1.sendSuccess)(res, updatedProfile);
 });
 /**
@@ -385,7 +447,7 @@ router.post('/me/upload', rbac_1.authenticateJWT, (0, rbac_1.requireRoles)(['COU
             });
         }
         (0, response_1.sendSuccess)(res, {
-            message: 'File uploaded to AWS S3 successfully',
+            message: 'File uploaded successfully',
             url: result.url,
             key: result.key,
         });
@@ -393,34 +455,6 @@ router.post('/me/upload', rbac_1.authenticateJWT, (0, rbac_1.requireRoles)(['COU
     catch (error) {
         console.error('Error uploading file to S3:', error);
         (0, response_1.sendError)(res, 'UPLOAD_FAILED', 'Failed to upload file to S3', 500);
-    }
-});
-/**
- * GET /api/v1/counselors/assets/:folder/:filename
- * Public proxy to stream S3 images even when direct bucket access is private
- */
-router.get('/assets/:folder/:filename', async (req, res) => {
-    try {
-        const { folder, filename } = req.params;
-        const key = `${folder}/${filename}`;
-        const s3Obj = await (0, s3_1.getS3Object)(key);
-        if (!s3Obj || !s3Obj.body) {
-            res.status(404).send('Asset not found');
-            return;
-        }
-        res.setHeader('Content-Type', s3Obj.contentType || 'image/png');
-        res.setHeader('Cache-Control', 'public, max-age=86400'); // Cache for 24h
-        if (typeof s3Obj.body.pipe === 'function') {
-            s3Obj.body.pipe(res);
-        }
-        else {
-            const bytes = await s3Obj.body.transformToByteArray();
-            res.send(Buffer.from(bytes));
-        }
-    }
-    catch (err) {
-        console.error('Error proxying asset:', err);
-        res.status(500).send('Failed to fetch asset');
     }
 });
 /**
