@@ -10,6 +10,7 @@ const slotGenerator_1 = require("./slotGenerator");
 const emailQueue_1 = require("../utils/emailQueue");
 const auditLogger_1 = require("../utils/auditLogger");
 const escapeHtml_1 = require("../utils/escapeHtml");
+const jitsi_1 = require("../utils/jitsi");
 async function bookSessionTransaction(params) {
     const { studentId, counselorId, startTimeUtc, endTimeUtc, ipAddress } = params;
     return await prisma_1.default.$transaction(async (tx) => {
@@ -68,8 +69,10 @@ async function bookSessionTransaction(params) {
             throw new Error('STUDENT_NOT_FOUND');
         }
         // 4. Generate obfuscated UUID meeting link for Jitsi
+        const domain = process.env.JITSI_DOMAIN || 'meet.jit.si';
         const meetingRoomUuid = crypto_1.default.randomUUID();
-        const meetingLink = `https://meet.jit.si/wellmindly-counseling-${meetingRoomUuid}`;
+        const meetingRoomName = `wellmindly-counseling-${meetingRoomUuid}`;
+        const meetingLink = `https://${domain}/${meetingRoomName}`;
         // 5. Create CounselorSession record
         const session = await tx.counselorSession.create({
             data: {
@@ -98,6 +101,16 @@ async function bookSessionTransaction(params) {
         });
         // 7. Queue async confirmation emails
         const formattedTime = startTimeUtc.toUTCString();
+        const studentMeetingLink = (0, jitsi_1.buildJitsiMeetingLink)({
+            baseLink: meetingLink,
+            user: student,
+            isModerator: false,
+        });
+        const counselorMeetingLink = (0, jitsi_1.buildJitsiMeetingLink)({
+            baseLink: meetingLink,
+            user: counselor.user,
+            isModerator: true,
+        });
         // Confirmation to Student
         (0, emailQueue_1.queueEmail)({
             to: student.email,
@@ -112,7 +125,7 @@ async function bookSessionTransaction(params) {
             <p style="margin: 4px 0;"><strong>Counselor:</strong> ${(0, escapeHtml_1.escapeHtml)(counselor.user.firstName)} ${(0, escapeHtml_1.escapeHtml)(counselor.user.lastName)} (${(0, escapeHtml_1.escapeHtml)(counselor.credentials)})</p>
           </div>
           <p>
-            <a href="${meetingLink}" style="background-color: #4f46e5; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold; display: inline-block;">Join Video Meeting</a>
+            <a href="${studentMeetingLink}" style="background-color: #4f46e5; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold; display: inline-block;">Join Video Meeting</a>
           </p>
         </div>
       `,
@@ -127,7 +140,7 @@ async function bookSessionTransaction(params) {
           <p>Hello <strong>${(0, escapeHtml_1.escapeHtml)(counselor.user.firstName)}</strong>,</p>
           <p>Student <strong>${(0, escapeHtml_1.escapeHtml)(student.firstName)} ${(0, escapeHtml_1.escapeHtml)(student.lastName)}</strong> has booked a counseling session with you.</p>
           <p><strong>Scheduled UTC Time:</strong> ${formattedTime}</p>
-          <p><a href="${meetingLink}" style="background-color: #4f46e5; color: white; padding: 10px 20px; text-decoration: none; border-radius: 6px; display: inline-block;">Open Video Meeting Room</a></p>
+          <p><a href="${counselorMeetingLink}" style="background-color: #4f46e5; color: white; padding: 10px 20px; text-decoration: none; border-radius: 6px; display: inline-block;">Open Video Meeting Room</a></p>
         </div>
       `,
         });

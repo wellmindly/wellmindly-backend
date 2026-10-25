@@ -13,6 +13,7 @@ const auditLogger_1 = require("../../utils/auditLogger");
 const emailQueue_1 = require("../../utils/emailQueue");
 const escapeHtml_1 = require("../../utils/escapeHtml");
 const accessControl_1 = require("../../services/accessControl");
+const jitsi_1 = require("../../utils/jitsi");
 const router = (0, express_1.Router)();
 // Protect student endpoints with JWT
 router.use(rbac_1.authenticateJWT, (0, rbac_1.requireRoles)(['STUDENT', 'ADMIN', 'SUPER_ADMIN']));
@@ -160,6 +161,12 @@ router.post('/sessions/book', async (req, res) => {
  * List student's booked sessions
  */
 router.get('/sessions/me', async (req, res) => {
+    const student = req.user?.sub
+        ? await prisma_1.default.user.findUnique({
+            where: { id: req.user.sub },
+            select: { id: true, firstName: true, lastName: true, email: true },
+        })
+        : null;
     const sessions = await prisma_1.default.counselorSession.findMany({
         where: { studentId: req.user?.sub, deletedAt: null },
         include: {
@@ -170,7 +177,17 @@ router.get('/sessions/me', async (req, res) => {
         },
         orderBy: { startTime: 'desc' },
     });
-    (0, response_1.sendSuccess)(res, sessions);
+    const enrichedSessions = sessions.map((s) => ({
+        ...s,
+        meetingLink: student
+            ? (0, jitsi_1.buildJitsiMeetingLink)({
+                baseLink: s.meetingLink,
+                user: student,
+                isModerator: false,
+            })
+            : s.meetingLink,
+    }));
+    (0, response_1.sendSuccess)(res, enrichedSessions);
 });
 /**
  * POST /api/v1/students/sessions/:id/cancel

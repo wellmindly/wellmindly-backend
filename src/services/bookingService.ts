@@ -4,6 +4,7 @@ import { generateBookableSlots } from './slotGenerator';
 import { queueEmail } from '../utils/emailQueue';
 import { logAuditEvent } from '../utils/auditLogger';
 import { escapeHtml } from '../utils/escapeHtml';
+import { buildJitsiMeetingLink } from '../utils/jitsi';
 
 export interface BookSessionParams {
   studentId: string;
@@ -92,8 +93,10 @@ export async function bookSessionTransaction(params: BookSessionParams) {
     }
 
     // 4. Generate obfuscated UUID meeting link for Jitsi
+    const domain = process.env.JITSI_DOMAIN || 'meet.jit.si';
     const meetingRoomUuid = crypto.randomUUID();
-    const meetingLink = `https://meet.jit.si/wellmindly-counseling-${meetingRoomUuid}`;
+    const meetingRoomName = `wellmindly-counseling-${meetingRoomUuid}`;
+    const meetingLink = `https://${domain}/${meetingRoomName}`;
 
     // 5. Create CounselorSession record
     const session = await tx.counselorSession.create({
@@ -126,6 +129,18 @@ export async function bookSessionTransaction(params: BookSessionParams) {
     // 7. Queue async confirmation emails
     const formattedTime = startTimeUtc.toUTCString();
 
+    const studentMeetingLink = buildJitsiMeetingLink({
+      baseLink: meetingLink,
+      user: student,
+      isModerator: false,
+    });
+
+    const counselorMeetingLink = buildJitsiMeetingLink({
+      baseLink: meetingLink,
+      user: counselor.user,
+      isModerator: true,
+    });
+
     // Confirmation to Student
     queueEmail({
       to: student.email,
@@ -140,7 +155,7 @@ export async function bookSessionTransaction(params: BookSessionParams) {
             <p style="margin: 4px 0;"><strong>Counselor:</strong> ${escapeHtml(counselor.user.firstName)} ${escapeHtml(counselor.user.lastName)} (${escapeHtml(counselor.credentials)})</p>
           </div>
           <p>
-            <a href="${meetingLink}" style="background-color: #4f46e5; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold; display: inline-block;">Join Video Meeting</a>
+            <a href="${studentMeetingLink}" style="background-color: #4f46e5; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold; display: inline-block;">Join Video Meeting</a>
           </p>
         </div>
       `,
@@ -156,7 +171,7 @@ export async function bookSessionTransaction(params: BookSessionParams) {
           <p>Hello <strong>${escapeHtml(counselor.user.firstName)}</strong>,</p>
           <p>Student <strong>${escapeHtml(student.firstName)} ${escapeHtml(student.lastName)}</strong> has booked a counseling session with you.</p>
           <p><strong>Scheduled UTC Time:</strong> ${formattedTime}</p>
-          <p><a href="${meetingLink}" style="background-color: #4f46e5; color: white; padding: 10px 20px; text-decoration: none; border-radius: 6px; display: inline-block;">Open Video Meeting Room</a></p>
+          <p><a href="${counselorMeetingLink}" style="background-color: #4f46e5; color: white; padding: 10px 20px; text-decoration: none; border-radius: 6px; display: inline-block;">Open Video Meeting Room</a></p>
         </div>
       `,
     });

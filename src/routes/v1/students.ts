@@ -8,6 +8,7 @@ import { logAuditEvent } from '../../utils/auditLogger';
 import { queueEmail } from '../../utils/emailQueue';
 import { escapeHtml } from '../../utils/escapeHtml';
 import { isStudentEligible } from '../../services/accessControl';
+import { buildJitsiMeetingLink } from '../../utils/jitsi';
 
 const router = Router();
 
@@ -186,6 +187,13 @@ router.post('/sessions/book', async (req: AuthenticatedRequest, res: Response) =
  * List student's booked sessions
  */
 router.get('/sessions/me', async (req: AuthenticatedRequest, res: Response) => {
+  const student = req.user?.sub
+    ? await prisma.user.findUnique({
+        where: { id: req.user.sub },
+        select: { id: true, firstName: true, lastName: true, email: true },
+      })
+    : null;
+
   const sessions = await prisma.counselorSession.findMany({
     where: { studentId: req.user?.sub, deletedAt: null },
     include: {
@@ -197,7 +205,18 @@ router.get('/sessions/me', async (req: AuthenticatedRequest, res: Response) => {
     orderBy: { startTime: 'desc' },
   });
 
-  sendSuccess(res, sessions);
+  const enrichedSessions = sessions.map((s) => ({
+    ...s,
+    meetingLink: student
+      ? buildJitsiMeetingLink({
+          baseLink: s.meetingLink,
+          user: student,
+          isModerator: false,
+        })
+      : s.meetingLink,
+  }));
+
+  sendSuccess(res, enrichedSessions);
 });
 
 /**

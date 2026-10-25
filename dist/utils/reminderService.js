@@ -7,6 +7,7 @@ exports.startReminderScheduler = startReminderScheduler;
 const prisma_1 = __importDefault(require("../lib/prisma"));
 const emailQueue_1 = require("./emailQueue");
 const escapeHtml_1 = require("./escapeHtml");
+const jitsi_1 = require("./jitsi");
 function startReminderScheduler() {
     // Check reminders every 5 minutes
     setInterval(async () => {
@@ -58,6 +59,16 @@ function sendSessionReminder(session, windowText) {
     const studentEmail = session.student.email;
     const counselorEmail = session.counselor.user.email;
     const meetingLink = session.meetingLink;
+    const studentMeetingLink = (0, jitsi_1.buildJitsiMeetingLink)({
+        baseLink: meetingLink,
+        user: session.student,
+        isModerator: false,
+    });
+    const counselorMeetingLink = (0, jitsi_1.buildJitsiMeetingLink)({
+        baseLink: meetingLink,
+        user: session.counselor.user,
+        isModerator: true,
+    });
     // 1. Notify Student
     (0, emailQueue_1.queueEmail)({
         to: studentEmail,
@@ -68,9 +79,9 @@ function sendSessionReminder(session, windowText) {
         <p>Hello <strong>${(0, escapeHtml_1.escapeHtml)(session.student.firstName)}</strong>,</p>
         <p>Your session with <strong>${(0, escapeHtml_1.escapeHtml)(session.counselor.user.firstName)} ${(0, escapeHtml_1.escapeHtml)(session.counselor.user.lastName)}</strong> starts in <strong>${windowText}</strong>.</p>
         <p style="margin: 20px 0;">
-          <a href="${meetingLink}" style="background-color: #4f46e5; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold; display: inline-block;">Join Video Call</a>
+          <a href="${studentMeetingLink}" style="background-color: #4f46e5; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold; display: inline-block;">Join Video Call</a>
         </p>
-        <p>Meeting URL: <a href="${meetingLink}">${meetingLink}</a></p>
+        <p>Meeting URL: <a href="${studentMeetingLink}">${studentMeetingLink}</a></p>
       </div>
     `,
     });
@@ -84,7 +95,7 @@ function sendSessionReminder(session, windowText) {
         <p>Hello <strong>${(0, escapeHtml_1.escapeHtml)(session.counselor.user.firstName)}</strong>,</p>
         <p>Your counseling session with <strong>${(0, escapeHtml_1.escapeHtml)(session.student.firstName)} ${(0, escapeHtml_1.escapeHtml)(session.student.lastName)}</strong> starts in <strong>${windowText}</strong>.</p>
         <p style="margin: 20px 0;">
-          <a href="${meetingLink}" style="background-color: #4f46e5; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold; display: inline-block;">Launch Meeting Room</a>
+          <a href="${counselorMeetingLink}" style="background-color: #4f46e5; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold; display: inline-block;">Launch Meeting Room</a>
         </p>
       </div>
     `,

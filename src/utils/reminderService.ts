@@ -1,6 +1,7 @@
 import prisma from '../lib/prisma';
 import { queueEmail } from './emailQueue';
 import { escapeHtml } from './escapeHtml';
+import { buildJitsiMeetingLink } from './jitsi';
 
 export function startReminderScheduler(): void {
   // Check reminders every 5 minutes
@@ -58,6 +59,18 @@ function sendSessionReminder(session: any, windowText: string): void {
   const counselorEmail = session.counselor.user.email;
   const meetingLink = session.meetingLink;
 
+  const studentMeetingLink = buildJitsiMeetingLink({
+    baseLink: meetingLink,
+    user: session.student,
+    isModerator: false,
+  });
+
+  const counselorMeetingLink = buildJitsiMeetingLink({
+    baseLink: meetingLink,
+    user: session.counselor.user,
+    isModerator: true,
+  });
+
   // 1. Notify Student
   queueEmail({
     to: studentEmail,
@@ -68,9 +81,9 @@ function sendSessionReminder(session: any, windowText: string): void {
         <p>Hello <strong>${escapeHtml(session.student.firstName)}</strong>,</p>
         <p>Your session with <strong>${escapeHtml(session.counselor.user.firstName)} ${escapeHtml(session.counselor.user.lastName)}</strong> starts in <strong>${windowText}</strong>.</p>
         <p style="margin: 20px 0;">
-          <a href="${meetingLink}" style="background-color: #4f46e5; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold; display: inline-block;">Join Video Call</a>
+          <a href="${studentMeetingLink}" style="background-color: #4f46e5; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold; display: inline-block;">Join Video Call</a>
         </p>
-        <p>Meeting URL: <a href="${meetingLink}">${meetingLink}</a></p>
+        <p>Meeting URL: <a href="${studentMeetingLink}">${studentMeetingLink}</a></p>
       </div>
     `,
   });
@@ -85,7 +98,7 @@ function sendSessionReminder(session: any, windowText: string): void {
         <p>Hello <strong>${escapeHtml(session.counselor.user.firstName)}</strong>,</p>
         <p>Your counseling session with <strong>${escapeHtml(session.student.firstName)} ${escapeHtml(session.student.lastName)}</strong> starts in <strong>${windowText}</strong>.</p>
         <p style="margin: 20px 0;">
-          <a href="${meetingLink}" style="background-color: #4f46e5; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold; display: inline-block;">Launch Meeting Room</a>
+          <a href="${counselorMeetingLink}" style="background-color: #4f46e5; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold; display: inline-block;">Launch Meeting Room</a>
         </p>
       </div>
     `,

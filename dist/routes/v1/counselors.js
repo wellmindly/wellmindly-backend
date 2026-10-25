@@ -19,6 +19,7 @@ const mailer_1 = require("../../utils/mailer");
 const auditLogger_1 = require("../../utils/auditLogger");
 const s3_1 = require("../../utils/s3");
 const escapeHtml_1 = require("../../utils/escapeHtml");
+const jitsi_1 = require("../../utils/jitsi");
 function normalizeAvatarUrl(url) {
     if (!url)
         return null;
@@ -634,7 +635,10 @@ router.put('/me/availability', async (req, res) => {
  * GET /api/v1/counselors/me/sessions
  */
 router.get('/me/sessions', async (req, res) => {
-    const profile = await prisma_1.default.counselorProfile.findUnique({ where: { userId: req.user?.sub } });
+    const profile = await prisma_1.default.counselorProfile.findUnique({
+        where: { userId: req.user?.sub },
+        include: { user: true },
+    });
     if (!profile) {
         (0, response_1.sendError)(res, 'NOT_FOUND', 'Profile not found', 404);
         return;
@@ -649,7 +653,17 @@ router.get('/me/sessions', async (req, res) => {
         },
         orderBy: { startTime: 'desc' },
     });
-    (0, response_1.sendSuccess)(res, sessions);
+    const enrichedSessions = sessions.map((s) => ({
+        ...s,
+        meetingLink: profile.user
+            ? (0, jitsi_1.buildJitsiMeetingLink)({
+                baseLink: s.meetingLink,
+                user: profile.user,
+                isModerator: true,
+            })
+            : s.meetingLink,
+    }));
+    (0, response_1.sendSuccess)(res, enrichedSessions);
 });
 /**
  * POST /api/v1/counselors/me/sessions/:id/notes
