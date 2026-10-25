@@ -28,20 +28,29 @@ app.set('trust proxy', true);
 app.use((0, helmet_1.default)());
 // Configure secure CORS policy checks
 const allowedOrigins = env_1.env.ALLOWED_ORIGINS.split(',');
-const mobileOrigins = ['http://localhost', 'capacitor://localhost'];
+const mobileOrigins = [
+    'http://localhost',
+    'https://localhost',
+    'capacitor://localhost',
+    'ionic://localhost',
+];
 app.use((0, cors_1.default)({
     origin: (origin, callback) => {
         if (!origin)
             return callback(null, true);
-        const isWellmindly = /^https:\/\/(.*\.)?wellmindly\.com$/i.test(origin);
+        const isWellmindly = /^https:\/\/(.*\.)?wellmindly\.com(:[0-9]+)?$/i.test(origin);
+        const isLocalhost = /^https?:\/\/localhost(:[0-9]+)?$/i.test(origin);
+        const isCapacitor = /^(capacitor|ionic):\/\/localhost/i.test(origin);
         if (isWellmindly ||
+            isLocalhost ||
+            isCapacitor ||
             allowedOrigins.indexOf(origin) !== -1 ||
             mobileOrigins.indexOf(origin) !== -1 ||
             allowedOrigins.includes('*')) {
             return callback(null, true);
         }
         else {
-            return callback(new Error('Not allowed by CORS'));
+            return callback(null, false);
         }
     },
     credentials: true,

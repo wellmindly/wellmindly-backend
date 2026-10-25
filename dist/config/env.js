@@ -25,7 +25,7 @@ const envSchema = zod_1.z.object({
     // 5173 student, 5174 counselor, 5175 auraflow, 5176 university. Kept in step
     // with each repo's vite.config so a fresh checkout with no .env can still
     // reach the API from every local portal.
-    ALLOWED_ORIGINS: zod_1.z.string().optional().default('http://localhost:5173,http://localhost:5174,http://localhost:5175,http://localhost:5176,https://wellmindly.com,https://admin.wellmindly.com,https://counselor.wellmindly.com,https://university.wellmindly.com,https://www.wellmindly.com,http://localhost,capacitor://localhost'),
+    ALLOWED_ORIGINS: zod_1.z.string().optional().default('http://localhost:5173,http://localhost:5174,http://localhost:5175,http://localhost:5176,https://wellmindly.com,https://admin.wellmindly.com,https://counselor.wellmindly.com,https://university.wellmindly.com,https://www.wellmindly.com,http://localhost,https://localhost,capacitor://localhost,ionic://localhost'),
     CHAT_SESSION_MAX_REQUESTS: zod_1.z.coerce.number().default(100),
     // Requests per IP per 15 minutes against /api. Raised default from 100 to 10000
     // to allow normal student and dashboard usage, including campus NAT environments
