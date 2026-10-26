@@ -32,6 +32,7 @@ router.post('/google/callback', async (req: Request, res: Response) => {
     try {
       const validAudiences = Array.from(new Set([
         env.GOOGLE_CLIENT_ID,
+        '297995941898-8ad73id91b3agdk1370olurg6iu2vi99.apps.googleusercontent.com',
         '297995941898-4u79rg42hld9jnhph91vdenhkmaf7r55.apps.googleusercontent.com',
         '942167444638-jcpvjkm9j14lqj29lvn3gbcnju4nf5pt.apps.googleusercontent.com',
       ].filter(Boolean) as string[]));
