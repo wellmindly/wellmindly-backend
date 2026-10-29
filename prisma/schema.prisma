@@ -185,14 +185,22 @@ model CrisisHotline {
 }
 
 model ContactRequest {
-  id        String   @id @default(uuid())
-  name      String
-  email     String
-  subject   String?
-  message   String   @db.Text
-  createdAt DateTime @default(now())
+  id                    String    @id @default(uuid())
+  name                  String
+  email                 String
+  normalizedEmail       String?
+  subject               String?
+  message               String    @db.Text
+  status                String    @default("VERIFIED")
+  verifiedAt            DateTime?
+  verificationTokenHash String?
+  verificationExpiresAt DateTime?
+  subscriptionKey       String?   @unique
+  createdAt             DateTime  @default(now())
 
   @@index([createdAt])
+  @@index([normalizedEmail])
+  @@index([status])
 }
 
 model UniversityOnboarding {

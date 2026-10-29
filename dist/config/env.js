@@ -66,6 +66,16 @@ const envSchema = zod_1.z.object({
         .optional()
         .default('https://admin.wellmindly.com'),
     MAINTENANCE_KEY: zod_1.z.string().optional().default('wellmindly_maint_2026_secure'),
+    // Waitlist & newsletter subscription protection configuration
+    WAITLIST_RATE_LIMIT_WINDOW_MS: zod_1.z.coerce.number().default(15 * 60 * 1000), // 15 mins
+    WAITLIST_RATE_LIMIT_IP_MAX: zod_1.z.coerce.number().default(50), // campus NAT friendly
+    WAITLIST_RATE_LIMIT_EMAIL_MAX: zod_1.z.coerce.number().default(5), // per normalized email
+    CAPTCHA_SECRET_KEY: zod_1.z.string().optional(),
+    ENABLE_DOUBLE_OPT_IN: zod_1.z
+        .string()
+        .optional()
+        .default('true')
+        .transform((v) => v.toLowerCase() !== 'false'),
 });
 const _env = envSchema.safeParse(process.env);
 if (!_env.success) {

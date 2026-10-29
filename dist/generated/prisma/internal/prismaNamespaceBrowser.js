@@ -214,8 +214,14 @@ exports.ContactRequestScalarFieldEnum = {
     id: 'id',
     name: 'name',
     email: 'email',
+    normalizedEmail: 'normalizedEmail',
     subject: 'subject',
     message: 'message',
+    status: 'status',
+    verifiedAt: 'verifiedAt',
+    verificationTokenHash: 'verificationTokenHash',
+    verificationExpiresAt: 'verificationExpiresAt',
+    subscriptionKey: 'subscriptionKey',
     createdAt: 'createdAt'
 };
 exports.UniversityOnboardingScalarFieldEnum = {

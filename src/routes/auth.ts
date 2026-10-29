@@ -283,65 +283,69 @@ router.post('/reset-password', async (req: Request, res: Response) => {
  * Traditional email/password login for Admins and University Staff.
  */
 router.post('/login', async (req: Request, res: Response) => {
-  const { email, password, role } = req.body;
+  try {
+    const { email, password, role } = req.body;
 
-  if (!email || !password) {
-    res.status(400).json({ error: 'Email and password are required' });
-    return;
-  }
+    if (!email || !password) {
+      res.status(400).json({ error: 'Email and password are required' });
+      return;
+    }
 
-  const normalizedEmail = typeof email === 'string' ? email.toLowerCase().trim() : '';
+    const normalizedEmail = typeof email === 'string' ? email.toLowerCase().trim() : '';
 
-  const user = await prisma.user.findUnique({
-    where: { email: normalizedEmail },
-    include: { university: true },
-  });
+    const user = await prisma.user.findUnique({
+      where: { email: normalizedEmail },
+      include: { university: true },
+    });
 
-  if (!user || !user.passwordHash) {
-    res.status(401).json({ error: 'Invalid email or password' });
-    return;
-  }
+    if (!user || !user.passwordHash) {
+      res.status(401).json({ error: 'Invalid email or password' });
+      return;
+    }
 
-  // Validate password
-  const bcrypt = require('bcrypt'); // require dynamically or add to top
-  const isValid = await bcrypt.compare(password, user.passwordHash);
+    // Validate password
+    const bcrypt = require('bcrypt'); // require dynamically or add to top
+    const isValid = await bcrypt.compare(password, user.passwordHash);
 
-  if (!isValid) {
-    res.status(401).json({ error: 'Invalid email or password' });
-    return;
-  }
+    if (!isValid) {
+      res.status(401).json({ error: 'Invalid email or password' });
+      return;
+    }
 
-  // Optional: Ensure the requested role matches their profile
-  if (role && user.role !== role) {
-    res.status(403).json({ error: 'Unauthorized role access' });
-    return;
-  }
+    // Optional: Ensure the requested role matches their profile
+    if (role && user.role !== role) {
+      res.status(403).json({ error: 'Unauthorized role access' });
+      return;
+    }
 
-  const token = signToken({
-    sub: user.id,
-    email: user.email,
-    role: user.role,
-    universityId: user.universityId,
-  });
-
-  const eligibility = await isStudentEligible(user.email);
-  const isVerified = eligibility.eligible || (user.university?.verified ?? false);
-
-  res.status(200).json({
-    token,
-    user: {
-      id: user.id,
+    const token = signToken({
+      sub: user.id,
       email: user.email,
-      firstName: user.firstName,
-      lastName: user.lastName,
       role: user.role,
       universityId: user.universityId,
-      universityDomain: user.university?.domain ?? eligibility.domain ?? null,
-      universityVerified: isVerified,
-    },
-    eligibility,
-  });
+    });
 
+    const eligibility = await isStudentEligible(user.email);
+    const isVerified = eligibility.eligible || (user.university?.verified ?? false);
+
+    res.status(200).json({
+      token,
+      user: {
+        id: user.id,
+        email: user.email,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        role: user.role,
+        universityId: user.universityId,
+        universityDomain: user.university?.domain ?? eligibility.domain ?? null,
+        universityVerified: isVerified,
+      },
+      eligibility,
+    });
+  } catch (err: any) {
+    console.error('Login error:', err);
+    res.status(500).json({ error: err.message || 'Authentication error', code: err.code || 'INTERNAL_ERROR' });
+  }
 });
 
 /**

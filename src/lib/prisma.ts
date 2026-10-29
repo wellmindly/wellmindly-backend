@@ -23,6 +23,8 @@ const connectionString = env.DATABASE_URL.split('?')[0];
 const pool = new Pool({
   connectionString,
   max: connectionLimit,
+  connectionTimeoutMillis: 5000,
+  idleTimeoutMillis: 10000,
   ssl: isLocalhost ? undefined : { rejectUnauthorized: false }
 });
 const adapter = new PrismaPg(pool);

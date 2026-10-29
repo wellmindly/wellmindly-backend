@@ -84,13 +84,13 @@ const strictAuthLimiter = rateLimit({
 
 // Public contact & newsletter bot protection (POST only, does not affect admin GET or student traffic)
 const publicContactLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 6,
+  windowMs: env.WAITLIST_RATE_LIMIT_WINDOW_MS,
+  max: env.WAITLIST_RATE_LIMIT_IP_MAX,
   standardHeaders: true,
   legacyHeaders: false,
   validate: { trustProxy: false },
-  skip: (req) => req.method !== 'POST',
-  message: { error: 'Too many contact submissions from this IP, please try again after 15 minutes' },
+  skip: (req) => req.method !== 'POST' || process.env.NODE_ENV === 'test',
+  message: { error: 'Too many contact submissions from this IP, please try again after a few minutes' },
 });
 
 // Mount limiters to endpoints
@@ -122,6 +122,57 @@ app.use('/api/v1/students', v1StudentsRouter);
 
 app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok', message: 'API is healthy' });
+});
+
+app.get('/api/health/db', async (req, res) => {
+  const dns = require('dns').promises;
+  let dnsLookup: any = null;
+  let egressIp: any = null;
+  let dbStatus: any = null;
+
+  try {
+    const https = require('https');
+    egressIp = await new Promise((resolve) => {
+      https.get('https://api.ipify.org?format=json', { timeout: 3000 }, (r: any) => {
+        let d = '';
+        r.on('data', (c: any) => d += c);
+        r.on('end', () => {
+          try { resolve(JSON.parse(d).ip); } catch { resolve(d); }
+        });
+      }).on('error', (e: any) => resolve(e.message));
+    });
+  } catch (e: any) {
+    egressIp = e.message;
+  }
+
+  try {
+    const parsed = new URL(env.DATABASE_URL);
+    dnsLookup = await dns.lookup(parsed.hostname);
+  } catch (e: any) {
+    dnsLookup = e.message;
+  }
+
+  try {
+    const { Client } = require('pg');
+    const c = new Client({
+      connectionString: env.DATABASE_URL.split('?')[0],
+      connectionTimeoutMillis: 3000,
+      ssl: { rejectUnauthorized: false },
+    });
+    await c.connect();
+    const q = await c.query('SELECT 1 as ok');
+    await c.end();
+    dbStatus = 'CONNECTED';
+  } catch (e: any) {
+    dbStatus = { error: e.message, code: e.code };
+  }
+
+  res.json({
+    egressIp,
+    dnsLookup,
+    dbStatus,
+    dbUrlConfigured: env.DATABASE_URL ? 'PRESENT (length ' + env.DATABASE_URL.length + ')' : 'MISSING',
+  });
 });
 
 // Unmatched routes. Express's default answer is an HTML page, so a client that

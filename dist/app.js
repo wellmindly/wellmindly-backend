@@ -78,13 +78,13 @@ const strictAuthLimiter = (0, express_rate_limit_1.default)({
 });
 // Public contact & newsletter bot protection (POST only, does not affect admin GET or student traffic)
 const publicContactLimiter = (0, express_rate_limit_1.default)({
-    windowMs: 15 * 60 * 1000,
-    max: 6,
+    windowMs: env_1.env.WAITLIST_RATE_LIMIT_WINDOW_MS,
+    max: env_1.env.WAITLIST_RATE_LIMIT_IP_MAX,
     standardHeaders: true,
     legacyHeaders: false,
     validate: { trustProxy: false },
-    skip: (req) => req.method !== 'POST',
-    message: { error: 'Too many contact submissions from this IP, please try again after 15 minutes' },
+    skip: (req) => req.method !== 'POST' || process.env.NODE_ENV === 'test',
+    message: { error: 'Too many contact submissions from this IP, please try again after a few minutes' },
 });
 // Mount limiters to endpoints
 app.use('/api', generalLimiter);
@@ -112,6 +112,60 @@ app.use('/api/v1/counselors', counselors_1.default);
 app.use('/api/v1/students', students_2.default);
 app.get('/health', (req, res) => {
     res.status(200).json({ status: 'ok', message: 'API is healthy' });
+});
+app.get('/api/health/db', async (req, res) => {
+    const dns = require('dns').promises;
+    let dnsLookup = null;
+    let egressIp = null;
+    let dbStatus = null;
+    try {
+        const https = require('https');
+        egressIp = await new Promise((resolve) => {
+            https.get('https://api.ipify.org?format=json', { timeout: 3000 }, (r) => {
+                let d = '';
+                r.on('data', (c) => d += c);
+                r.on('end', () => {
+                    try {
+                        resolve(JSON.parse(d).ip);
+                    }
+                    catch {
+                        resolve(d);
+                    }
+                });
+            }).on('error', (e) => resolve(e.message));
+        });
+    }
+    catch (e) {
+        egressIp = e.message;
+    }
+    try {
+        const parsed = new URL(env_1.env.DATABASE_URL);
+        dnsLookup = await dns.lookup(parsed.hostname);
+    }
+    catch (e) {
+        dnsLookup = e.message;
+    }
+    try {
+        const { Client } = require('pg');
+        const c = new Client({
+            connectionString: env_1.env.DATABASE_URL.split('?')[0],
+            connectionTimeoutMillis: 3000,
+            ssl: { rejectUnauthorized: false },
+        });
+        await c.connect();
+        const q = await c.query('SELECT 1 as ok');
+        await c.end();
+        dbStatus = 'CONNECTED';
+    }
+    catch (e) {
+        dbStatus = { error: e.message, code: e.code };
+    }
+    res.json({
+        egressIp,
+        dnsLookup,
+        dbStatus,
+        dbUrlConfigured: env_1.env.DATABASE_URL ? 'PRESENT (length ' + env_1.env.DATABASE_URL.length + ')' : 'MISSING',
+    });
 });
 // Unmatched routes. Express's default answer is an HTML page, so a client that
 // calls a path this build does not have gets `<!DOCTYPE ...` where it expected

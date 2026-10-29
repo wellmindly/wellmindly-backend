@@ -7,14 +7,28 @@ import { sendEmail } from '../utils/mailer';
 import { queueEmail } from '../utils/emailQueue';
 import { escapeHtml } from '../utils/escapeHtml';
 import { env } from '../config/env';
+import {
+  waitlistProtectionMiddleware,
+  normalizeEmail,
+  isValidEmailSyntax,
+  getClientIp,
+} from '../middleware/waitlistProtection';
+import { logWaitlistEvent, waitlistMetrics, maskEmail, generateRequestId } from '../utils/waitlistLogger';
 
 const router = Router();
 
 const generalContactSchema = z.object({
-  name: z.string().min(1, 'Name is required'),
-  email: z.string().email('Invalid email address'),
+  name: z.string().min(1, 'Name is required').trim(),
+  email: z
+    .string()
+    .min(1, 'Email is required')
+    .transform((val) => normalizeEmail(val))
+    .refine(isValidEmailSyntax, { message: 'Invalid email address' }),
   subject: z.string().optional(),
   message: z.string().min(1, 'Message is required'),
+  captchaToken: z.string().optional(),
+  hp_confirm: z.string().optional(),
+  _t: z.union([z.string(), z.number()]).optional(),
 });
 
 const universityContactSchema = z.object({
@@ -37,73 +51,473 @@ const counselorContactSchema = z.object({
 
 // --- Public Endpoints ---
 
-router.post('/general', async (req: Request, res: Response) => {
+router.post('/general', waitlistProtectionMiddleware, async (req: Request, res: Response) => {
+  const requestId = (req as any).requestId || generateRequestId();
+  const clientIp = getClientIp(req);
+
   try {
-    const { hp_confirm, _t } = req.body || {};
-
-    // 1. Honeypot check: automated spambots populate hidden fields
-    if (hp_confirm) {
-      res.status(200).json({ success: true, message: 'Message received' });
-      return;
-    }
-
-    // 2. Minimum form dwell time: automated bots submit in < 1000ms
-    if (_t && Date.now() - Number(_t) < 1000) {
-      res.status(200).json({ success: true, message: 'Message received' });
-      return;
-    }
-
     const data = generalContactSchema.parse(req.body);
-    const request = await prisma.contactRequest.create({ data });
+    const normEmail = normalizeEmail(data.email);
 
     const isNewsletter =
       data.name === 'Newsletter Subscriber' ||
-      data.subject?.toLowerCase().includes('newsletter') ||
-      data.subject?.toLowerCase().includes('waitlist');
+      data.name === 'Newsletter Waitlist' ||
+      (data.subject && /waitlist|newsletter/i.test(data.subject)) ||
+      false;
 
-    // Only queue notification emails for direct inquiries, never for newsletter/waitlist to prevent burning email quotas
-    if (!isNewsletter) {
-      // (a) Submitter acknowledgement
-      queueEmail({
-        to: data.email,
-        subject: `We've received your message: ${data.subject || 'General Inquiry'}`,
-        html: `
-          <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1e293b;">
-            <h2 style="color: #4f46e5;">Message Received</h2>
-            <p>Hello <strong>${escapeHtml(data.name)}</strong>,</p>
-            <p>Thank you for reaching out to WellMindly. We have received your message regarding <strong>${escapeHtml(data.subject || 'General Inquiry')}</strong> and a member of our team will review it.</p>
-            <p style="color: #64748b; font-size: 14px; margin-top: 20px;">WellMindly Student Support Team</p>
-          </div>
-        `,
+    if (isNewsletter) {
+      const campaign = (data.subject || 'Waitlist: Human Counselling for All Students').trim();
+      const campaignKey = campaign.toLowerCase();
+      const subscriptionKey = `${normEmail}::${campaignKey}`;
+
+      logWaitlistEvent('SUBSCRIPTION_ATTEMPT', {
+        requestId,
+        ip: clientIp,
+        email: normEmail,
+        campaign,
       });
 
-      // (b) Internal notification
-      queueEmail({
-        to: env.CONTACT_NOTIFY_TO,
-        subject: `[Contact Request] ${data.subject || 'General Inquiry'} from ${data.name}`,
-        html: `
-          <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1e293b;">
-            <h2 style="color: #4f46e5;">New Contact Request</h2>
-            <p><strong>From:</strong> ${escapeHtml(data.name)} (${escapeHtml(data.email)})</p>
-            <p><strong>Subject:</strong> ${escapeHtml(data.subject || 'N/A')}</p>
-            <div style="background-color: #f8fafc; padding: 16px; border-radius: 8px; border-left: 4px solid #4f46e5; margin: 16px 0;">
-              <p style="white-space: pre-wrap; margin: 0;">${escapeHtml(data.message)}</p>
-            </div>
-          </div>
-        `,
+      // Check for existing subscription for this email & campaign
+      const existing = await prisma.contactRequest.findFirst({
+        where: { subscriptionKey },
       });
+
+      if (existing) {
+        logWaitlistEvent('DUPLICATE_PREVENTED', {
+          requestId,
+          ip: clientIp,
+          email: normEmail,
+          campaign,
+          reason: `Existing record with status=${existing.status}`,
+        });
+
+        if (existing.status === 'VERIFIED') {
+          // Idempotent generic safe response for confirmed subscriber
+          res.status(200).json({
+            success: true,
+            message: 'Thank you for your interest! If you are not already confirmed, please check your email for a verification link.',
+          });
+          return;
+        }
+
+        // If PENDING and token generated > 2 minutes ago, resend confirmation email
+        const tokenAgeMs = existing.verificationExpiresAt
+          ? 24 * 60 * 60 * 1000 - (new Date(existing.verificationExpiresAt).getTime() - Date.now())
+          : Infinity;
+
+        if (tokenAgeMs > 2 * 60 * 1000) {
+          const rawToken = crypto.randomBytes(32).toString('hex');
+          const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+          const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+          await prisma.contactRequest.update({
+            where: { id: existing.id },
+            data: {
+              verificationTokenHash: tokenHash,
+              verificationExpiresAt: expiresAt,
+            },
+          });
+
+          const verifyUrl = `${env.STUDENT_PORTAL_URL}/verify-subscription?token=${rawToken}`;
+          try {
+            await sendEmail({
+              to: normEmail,
+              subject: `Verify your subscription: ${campaign}`,
+              html: `
+                <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1e293b; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 16px;">
+                  <h2 style="color: #4f46e5; margin-top: 0;">Confirm Your Waitlist Subscription</h2>
+                  <p>Hello,</p>
+                  <p>We received a request to subscribe this email address to <strong>${escapeHtml(campaign)}</strong> on WellMindly.</p>
+                  <p>Please click the button below to verify your email address and activate your notifications:</p>
+                  <p style="margin: 28px 0;">
+                    <a href="${verifyUrl}" style="background-color: #4f46e5; color: white; padding: 12px 28px; text-decoration: none; border-radius: 8px; font-weight: bold; display: inline-block;">Confirm Subscription</a>
+                  </p>
+                  <p style="color: #64748b; font-size: 13px;">Or copy and paste this link in your browser:<br/><a href="${verifyUrl}" style="color: #4f46e5;">${verifyUrl}</a></p>
+                  <p style="color: #94a3b8; font-size: 12px; margin-top: 24px;">This single-use confirmation link will expire in 24 hours. If you did not request this, you can safely ignore this email.</p>
+                </div>
+              `,
+            });
+            logWaitlistEvent('VERIFICATION_EMAIL_SENT', { requestId, ip: clientIp, email: normEmail, campaign });
+          } catch (mailErr: any) {
+            logWaitlistEvent('VERIFICATION_EMAIL_FAILED', { requestId, ip: clientIp, email: normEmail, campaign, reason: mailErr.message });
+          }
+        } else {
+          logWaitlistEvent('RESEND_VERIFICATION_IGNORED', { requestId, ip: clientIp, email: normEmail, campaign, reason: 'Throttled within 2m window' });
+        }
+
+        res.status(200).json({
+          success: true,
+          message: 'Thank you for your interest! If you are not already confirmed, please check your email for a verification link.',
+        });
+        return;
+      }
+
+      // New subscriber: create pending or verified record
+      const rawToken = crypto.randomBytes(32).toString('hex');
+      const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+      const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+      const isDoubleOptIn = env.ENABLE_DOUBLE_OPT_IN;
+
+      let newRecord;
+      try {
+        newRecord = await prisma.contactRequest.create({
+          data: {
+            name: data.name,
+            email: data.email.trim(),
+            normalizedEmail: normEmail,
+            subject: campaign,
+            message: data.message,
+            status: isDoubleOptIn ? 'PENDING' : 'VERIFIED',
+            verifiedAt: isDoubleOptIn ? null : new Date(),
+            subscriptionKey,
+            verificationTokenHash: isDoubleOptIn ? tokenHash : null,
+            verificationExpiresAt: isDoubleOptIn ? expiresAt : null,
+          },
+        });
+        logWaitlistEvent('SUBSCRIPTION_CREATED', { requestId, ip: clientIp, email: normEmail, campaign, status: isDoubleOptIn ? 'PENDING' : 'VERIFIED' });
+      } catch (err: any) {
+        // Database unique constraint violation (P2002) - concurrent request handled gracefully
+        if (err?.code === 'P2002') {
+          logWaitlistEvent('DUPLICATE_PREVENTED', {
+            requestId,
+            ip: clientIp,
+            email: normEmail,
+            campaign,
+            reason: 'Concurrent P2002 unique constraint caught',
+          });
+          res.status(200).json({
+            success: true,
+            message: 'Thank you for your interest! If you are not already confirmed, please check your email for a verification link.',
+          });
+          return;
+        }
+        throw err;
+      }
+
+      if (isDoubleOptIn) {
+        const verifyUrl = `${env.STUDENT_PORTAL_URL}/verify-subscription?token=${rawToken}`;
+        try {
+          await sendEmail({
+            to: normEmail,
+            subject: `Verify your subscription: ${campaign}`,
+            html: `
+              <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1e293b; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 16px;">
+                <h2 style="color: #4f46e5; margin-top: 0;">Confirm Your Waitlist Subscription</h2>
+                <p>Hello,</p>
+                <p>Thank you for requesting updates for <strong>${escapeHtml(campaign)}</strong> on WellMindly.</p>
+                <p>Please click the button below to verify your email address and activate your notifications:</p>
+                <p style="margin: 28px 0;">
+                  <a href="${verifyUrl}" style="background-color: #4f46e5; color: white; padding: 12px 28px; text-decoration: none; border-radius: 8px; font-weight: bold; display: inline-block;">Confirm Subscription</a>
+                </p>
+                <p style="color: #64748b; font-size: 13px;">Or copy and paste this link in your browser:<br/><a href="${verifyUrl}" style="color: #4f46e5;">${verifyUrl}</a></p>
+                <p style="color: #94a3b8; font-size: 12px; margin-top: 24px;">This single-use confirmation link will expire in 24 hours. If you did not request this, you can safely ignore this email.</p>
+              </div>
+            `,
+          });
+          logWaitlistEvent('VERIFICATION_EMAIL_SENT', { requestId, ip: clientIp, email: normEmail, campaign });
+        } catch (mailErr: any) {
+          logWaitlistEvent('VERIFICATION_EMAIL_FAILED', { requestId, ip: clientIp, email: normEmail, campaign, reason: mailErr.message });
+        }
+      }
+
+      res.status(201).json({
+        success: true,
+        message: isDoubleOptIn
+          ? 'Thank you for joining our waitlist! Please check your email to confirm your subscription.'
+          : 'Thank you for joining our waitlist!',
+        status: isDoubleOptIn ? 'PENDING' : 'VERIFIED',
+        data: {
+          id: newRecord.id,
+          email: newRecord.email,
+          subject: newRecord.subject,
+          status: newRecord.status,
+        },
+      });
+      return;
     }
+
+    // Standard Non-Newsletter Contact Inquiry
+    const request = await prisma.contactRequest.create({
+      data: {
+        name: data.name,
+        email: data.email.trim(),
+        normalizedEmail: normEmail,
+        subject: data.subject,
+        message: data.message,
+        status: 'VERIFIED',
+        subscriptionKey: null,
+      },
+    });
+
+    // (a) Submitter acknowledgement
+    queueEmail({
+      to: data.email,
+      subject: `We've received your message: ${data.subject || 'General Inquiry'}`,
+      html: `
+        <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1e293b;">
+          <h2 style="color: #4f46e5;">Message Received</h2>
+          <p>Hello <strong>${escapeHtml(data.name)}</strong>,</p>
+          <p>Thank you for reaching out to WellMindly. We have received your message regarding <strong>${escapeHtml(data.subject || 'General Inquiry')}</strong> and a member of our team will review it.</p>
+          <p style="color: #64748b; font-size: 14px; margin-top: 20px;">WellMindly Student Support Team</p>
+        </div>
+      `,
+    });
+
+    // (b) Internal notification
+    queueEmail({
+      to: env.CONTACT_NOTIFY_TO,
+      subject: `[Contact Request] ${data.subject || 'General Inquiry'} from ${data.name}`,
+      html: `
+        <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1e293b;">
+          <h2 style="color: #4f46e5;">New Contact Request</h2>
+          <p><strong>From:</strong> ${escapeHtml(data.name)} (${escapeHtml(data.email)})</p>
+          <p><strong>Subject:</strong> ${escapeHtml(data.subject || 'N/A')}</p>
+          <div style="background-color: #f8fafc; padding: 16px; border-radius: 8px; border-left: 4px solid #4f46e5; margin: 16px 0;">
+            <p style="white-space: pre-wrap; margin: 0;">${escapeHtml(data.message)}</p>
+          </div>
+        </div>
+      `,
+    });
 
     res.status(201).json({ success: true, message: 'Message received', data: request });
   } catch (error) {
     if (error instanceof z.ZodError) {
-      res.status(400).json({ error: error.issues[0].message });
+      res.status(400).json({ success: false, error: error.issues[0].message });
       return;
     }
     console.error('Error creating general contact:', error);
-    res.status(500).json({ error: 'Failed to submit contact request' });
+    res.status(500).json({ success: false, error: 'Failed to submit contact request' });
   }
 });
+
+/**
+ * GET /api/contacts/verify & POST /api/contacts/verify
+ * Confirm double opt-in email verification via single-use expiring token.
+ */
+async function handleVerifySubscription(req: Request, res: Response) {
+  const token = (req.query.token as string) || (req.body?.token as string);
+  const requestId = generateRequestId();
+  const clientIp = getClientIp(req);
+
+  if (!token || typeof token !== 'string' || token.trim().length === 0) {
+    logWaitlistEvent('VERIFICATION_FAILED_INVALID', { requestId, ip: clientIp, reason: 'Empty token' });
+    res.status(400).json({ success: false, error: 'Invalid verification token.' });
+    return;
+  }
+
+  const tokenHash = crypto.createHash('sha256').update(token.trim()).digest('hex');
+
+  try {
+    const subscriber = await prisma.contactRequest.findFirst({
+      where: { verificationTokenHash: tokenHash },
+    });
+
+    if (!subscriber) {
+      logWaitlistEvent('VERIFICATION_FAILED_INVALID', { requestId, ip: clientIp, reason: 'Token hash not found' });
+      res.status(400).json({ success: false, error: 'Invalid or expired verification token.' });
+      return;
+    }
+
+    if (subscriber.verificationExpiresAt && new Date(subscriber.verificationExpiresAt) < new Date()) {
+      logWaitlistEvent('VERIFICATION_FAILED_EXPIRED', {
+        requestId,
+        ip: clientIp,
+        email: subscriber.normalizedEmail || undefined,
+        reason: 'Token expired',
+      });
+      res.status(400).json({
+        success: false,
+        error: 'Verification token has expired. Please request a new verification link.',
+      });
+      return;
+    }
+
+    // Safe idempotent confirmation
+    if (subscriber.status === 'VERIFIED') {
+      logWaitlistEvent('VERIFICATION_ALREADY_CONFIRMED', {
+        requestId,
+        ip: clientIp,
+        email: subscriber.normalizedEmail || undefined,
+      });
+      res.status(200).json({
+        success: true,
+        message: 'Your subscription is already confirmed!',
+      });
+      return;
+    }
+
+    // Invalidate token on single use and mark as VERIFIED
+    await prisma.contactRequest.update({
+      where: { id: subscriber.id },
+      data: {
+        status: 'VERIFIED',
+        verifiedAt: new Date(),
+        verificationTokenHash: null,
+      },
+    });
+
+    logWaitlistEvent('VERIFICATION_SUCCESS', {
+      requestId,
+      ip: clientIp,
+      email: subscriber.normalizedEmail || undefined,
+      campaign: subscriber.subject || undefined,
+    });
+
+    // If request accepts HTML (direct email click in browser), redirect to frontend confirmation page
+    if (req.method === 'GET' && req.accepts('html') && !req.accepts('json')) {
+      res.redirect(`${env.STUDENT_PORTAL_URL}/verify-subscription?status=confirmed`);
+      return;
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Your subscription has been confirmed successfully! Thank you for subscribing.',
+    });
+  } catch (error) {
+    console.error('Error verifying subscription token:', error);
+    res.status(500).json({ success: false, error: 'Verification failed. Please try again.' });
+  }
+}
+
+router.get('/verify', handleVerifySubscription);
+router.post('/verify', handleVerifySubscription);
+
+/**
+ * POST /api/contacts/resend-verification
+ * Resend verification link to a pending subscriber.
+ */
+router.post('/resend-verification', waitlistProtectionMiddleware, async (req: Request, res: Response) => {
+  const requestId = (req as any).requestId || generateRequestId();
+  const clientIp = getClientIp(req);
+  const rawEmail = typeof req.body?.email === 'string' ? req.body.email : '';
+  const normEmail = normalizeEmail(rawEmail);
+  const campaign = (req.body?.subject || req.body?.campaign || 'Waitlist: Human Counselling for All Students').trim();
+  const subscriptionKey = `${normEmail}::${campaign.toLowerCase()}`;
+
+  // Always return safe, generic 200 response to avoid disclosing subscriber presence
+  const genericResponse = {
+    success: true,
+    message: 'If a pending subscription exists for that email address, a confirmation email has been sent.',
+  };
+
+  if (!isValidEmailSyntax(normEmail)) {
+    res.status(400).json({ success: false, error: 'Please provide a valid email address.' });
+    return;
+  }
+
+  try {
+    const subscriber = await prisma.contactRequest.findFirst({
+      where: { subscriptionKey },
+    });
+
+    if (!subscriber || subscriber.status !== 'PENDING') {
+      logWaitlistEvent('RESEND_VERIFICATION_IGNORED', {
+        requestId,
+        ip: clientIp,
+        email: normEmail,
+        campaign,
+        reason: !subscriber ? 'No subscriber found' : 'Already confirmed',
+      });
+      res.status(200).json(genericResponse);
+      return;
+    }
+
+    const rawToken = crypto.randomBytes(32).toString('hex');
+    const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+    await prisma.contactRequest.update({
+      where: { id: subscriber.id },
+      data: {
+        verificationTokenHash: tokenHash,
+        verificationExpiresAt: expiresAt,
+      },
+    });
+
+    const verifyUrl = `${env.STUDENT_PORTAL_URL}/verify-subscription?token=${rawToken}`;
+    await sendEmail({
+      to: normEmail,
+      subject: `Verify your subscription: ${campaign}`,
+      html: `
+        <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1e293b; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 16px;">
+          <h2 style="color: #4f46e5; margin-top: 0;">Confirm Your Waitlist Subscription</h2>
+          <p>Hello,</p>
+          <p>We received a request to resend the verification link for <strong>${escapeHtml(campaign)}</strong> on WellMindly.</p>
+          <p style="margin: 28px 0;">
+            <a href="${verifyUrl}" style="background-color: #4f46e5; color: white; padding: 12px 28px; text-decoration: none; border-radius: 8px; font-weight: bold; display: inline-block;">Confirm Subscription</a>
+          </p>
+          <p style="color: #64748b; font-size: 13px;">Or copy and paste this link in your browser:<br/><a href="${verifyUrl}" style="color: #4f46e5;">${verifyUrl}</a></p>
+          <p style="color: #94a3b8; font-size: 12px; margin-top: 24px;">This link will expire in 24 hours.</p>
+        </div>
+      `,
+    });
+
+    logWaitlistEvent('RESEND_VERIFICATION_SENT', { requestId, ip: clientIp, email: normEmail, campaign });
+    res.status(200).json(genericResponse);
+  } catch (error) {
+    console.error('Error resending verification email:', error);
+    res.status(200).json(genericResponse);
+  }
+});
+
+/**
+ * GET /api/contacts/waitlist/metrics
+ * Operational telemetry for waitlist & newsletter subscriptions (ADMIN only)
+ */
+router.get(
+  '/waitlist/metrics',
+  authenticateJWT,
+  authorizeRoles('ADMIN'),
+  async (_req: Request, res: Response) => {
+    try {
+      const memorySnapshot = waitlistMetrics.getSnapshot();
+      const [totalCount, verifiedCount, pendingCount] = await Promise.all([
+        prisma.contactRequest.count({
+          where: {
+            OR: [
+              { name: { in: ['Newsletter Subscriber', 'Newsletter Waitlist'] } },
+              { subject: { contains: 'waitlist', mode: 'insensitive' } },
+              { subject: { contains: 'newsletter', mode: 'insensitive' } },
+            ],
+          },
+        }),
+        prisma.contactRequest.count({
+          where: {
+            status: 'VERIFIED',
+            OR: [
+              { name: { in: ['Newsletter Subscriber', 'Newsletter Waitlist'] } },
+              { subject: { contains: 'waitlist', mode: 'insensitive' } },
+              { subject: { contains: 'newsletter', mode: 'insensitive' } },
+            ],
+          },
+        }),
+        prisma.contactRequest.count({
+          where: {
+            status: 'PENDING',
+            OR: [
+              { name: { in: ['Newsletter Subscriber', 'Newsletter Waitlist'] } },
+              { subject: { contains: 'waitlist', mode: 'insensitive' } },
+              { subject: { contains: 'newsletter', mode: 'insensitive' } },
+            ],
+          },
+        }),
+      ]);
+
+      res.status(200).json({
+        success: true,
+        metrics: {
+          ...memorySnapshot,
+          databaseTotalWaitlist: totalCount,
+          databaseConfirmedVerified: verifiedCount,
+          databasePendingVerification: pendingCount,
+        },
+      });
+    } catch (error) {
+      console.error('Error fetching waitlist metrics:', error);
+      res.status(500).json({ error: 'Failed to fetch waitlist metrics' });
+    }
+  }
+);
 
 router.post('/university', async (req: Request, res: Response) => {
   try {
@@ -264,11 +678,39 @@ router.get(
       const type = (req.query.type as string || '').toLowerCase().trim();
       const skip = (page - 1) * limit;
 
+      const statusFilter = (req.query.status as string || '').toUpperCase().trim();
       let whereClause: any = undefined;
+
       if (type === 'newsletter') {
-        whereClause = { name: 'Newsletter Subscriber' };
+        whereClause = {
+          OR: [
+            { name: { in: ['Newsletter Subscriber', 'Newsletter Waitlist'] } },
+            { subject: { contains: 'waitlist', mode: 'insensitive' } },
+            { subject: { contains: 'newsletter', mode: 'insensitive' } },
+          ],
+        };
       } else if (type === 'inquiries') {
-        whereClause = { NOT: { name: 'Newsletter Subscriber' } };
+        whereClause = {
+          AND: [
+            { name: { notIn: ['Newsletter Subscriber', 'Newsletter Waitlist'] } },
+            {
+              NOT: {
+                OR: [
+                  { subject: { contains: 'waitlist', mode: 'insensitive' } },
+                  { subject: { contains: 'newsletter', mode: 'insensitive' } },
+                ],
+              },
+            },
+          ],
+        };
+      }
+
+      if (statusFilter && (statusFilter === 'VERIFIED' || statusFilter === 'PENDING')) {
+        if (whereClause) {
+          whereClause = { AND: [whereClause, { status: statusFilter }] };
+        } else {
+          whereClause = { status: statusFilter };
+        }
       }
 
       const [contacts, total] = await Promise.all([
@@ -474,7 +916,13 @@ router.delete(
   async (_req: Request, res: Response) => {
     try {
       const result = await prisma.contactRequest.deleteMany({
-        where: { name: 'Newsletter Subscriber' },
+        where: {
+          OR: [
+            { name: { in: ['Newsletter Subscriber', 'Newsletter Waitlist'] } },
+            { subject: { contains: 'waitlist', mode: 'insensitive' } },
+            { subject: { contains: 'newsletter', mode: 'insensitive' } },
+          ],
+        },
       });
       res.status(200).json({ success: true, count: result.count });
     } catch (error) {

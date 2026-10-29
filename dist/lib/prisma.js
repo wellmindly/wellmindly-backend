@@ -22,6 +22,8 @@ const connectionString = env_1.env.DATABASE_URL.split('?')[0];
 const pool = new pg_1.Pool({
     connectionString,
     max: connectionLimit,
+    connectionTimeoutMillis: 5000,
+    idleTimeoutMillis: 10000,
     ssl: isLocalhost ? undefined : { rejectUnauthorized: false }
 });
 const adapter = new adapter_pg_1.PrismaPg(pool);
