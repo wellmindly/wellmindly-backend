@@ -39,38 +39,60 @@ const counselorContactSchema = z.object({
 
 router.post('/general', async (req: Request, res: Response) => {
   try {
+    const { hp_confirm, _t } = req.body || {};
+
+    // 1. Honeypot check: automated spambots populate hidden fields
+    if (hp_confirm) {
+      res.status(200).json({ success: true, message: 'Message received' });
+      return;
+    }
+
+    // 2. Minimum form dwell time: automated bots submit in < 1000ms
+    if (_t && Date.now() - Number(_t) < 1000) {
+      res.status(200).json({ success: true, message: 'Message received' });
+      return;
+    }
+
     const data = generalContactSchema.parse(req.body);
     const request = await prisma.contactRequest.create({ data });
 
-    // (a) Submitter acknowledgement
-    queueEmail({
-      to: data.email,
-      subject: `We've received your message: ${data.subject || 'General Inquiry'}`,
-      html: `
-        <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1e293b;">
-          <h2 style="color: #4f46e5;">Message Received</h2>
-          <p>Hello <strong>${escapeHtml(data.name)}</strong>,</p>
-          <p>Thank you for reaching out to WellMindly. We have received your message regarding <strong>${escapeHtml(data.subject || 'General Inquiry')}</strong> and a member of our team will review it.</p>
-          <p style="color: #64748b; font-size: 14px; margin-top: 20px;">WellMindly Student Support Team</p>
-        </div>
-      `,
-    });
+    const isNewsletter =
+      data.name === 'Newsletter Subscriber' ||
+      data.subject?.toLowerCase().includes('newsletter') ||
+      data.subject?.toLowerCase().includes('waitlist');
 
-    // (b) Internal notification
-    queueEmail({
-      to: env.CONTACT_NOTIFY_TO,
-      subject: `[Contact Request] ${data.subject || 'General Inquiry'} from ${data.name}`,
-      html: `
-        <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1e293b;">
-          <h2 style="color: #4f46e5;">New Contact Request</h2>
-          <p><strong>From:</strong> ${escapeHtml(data.name)} (${escapeHtml(data.email)})</p>
-          <p><strong>Subject:</strong> ${escapeHtml(data.subject || 'N/A')}</p>
-          <div style="background-color: #f8fafc; padding: 16px; border-radius: 8px; border-left: 4px solid #4f46e5; margin: 16px 0;">
-            <p style="white-space: pre-wrap; margin: 0;">${escapeHtml(data.message)}</p>
+    // Only queue notification emails for direct inquiries, never for newsletter/waitlist to prevent burning email quotas
+    if (!isNewsletter) {
+      // (a) Submitter acknowledgement
+      queueEmail({
+        to: data.email,
+        subject: `We've received your message: ${data.subject || 'General Inquiry'}`,
+        html: `
+          <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1e293b;">
+            <h2 style="color: #4f46e5;">Message Received</h2>
+            <p>Hello <strong>${escapeHtml(data.name)}</strong>,</p>
+            <p>Thank you for reaching out to WellMindly. We have received your message regarding <strong>${escapeHtml(data.subject || 'General Inquiry')}</strong> and a member of our team will review it.</p>
+            <p style="color: #64748b; font-size: 14px; margin-top: 20px;">WellMindly Student Support Team</p>
           </div>
-        </div>
-      `,
-    });
+        `,
+      });
+
+      // (b) Internal notification
+      queueEmail({
+        to: env.CONTACT_NOTIFY_TO,
+        subject: `[Contact Request] ${data.subject || 'General Inquiry'} from ${data.name}`,
+        html: `
+          <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1e293b;">
+            <h2 style="color: #4f46e5;">New Contact Request</h2>
+            <p><strong>From:</strong> ${escapeHtml(data.name)} (${escapeHtml(data.email)})</p>
+            <p><strong>Subject:</strong> ${escapeHtml(data.subject || 'N/A')}</p>
+            <div style="background-color: #f8fafc; padding: 16px; border-radius: 8px; border-left: 4px solid #4f46e5; margin: 16px 0;">
+              <p style="white-space: pre-wrap; margin: 0;">${escapeHtml(data.message)}</p>
+            </div>
+          </div>
+        `,
+      });
+    }
 
     res.status(201).json({ success: true, message: 'Message received', data: request });
   } catch (error) {
@@ -239,15 +261,24 @@ router.get(
     try {
       const page = parseInt(req.query.page as string) || 1;
       const limit = parseInt(req.query.limit as string) || 10;
+      const type = (req.query.type as string || '').toLowerCase().trim();
       const skip = (page - 1) * limit;
+
+      let whereClause: any = undefined;
+      if (type === 'newsletter') {
+        whereClause = { name: 'Newsletter Subscriber' };
+      } else if (type === 'inquiries') {
+        whereClause = { NOT: { name: 'Newsletter Subscriber' } };
+      }
 
       const [contacts, total] = await Promise.all([
         prisma.contactRequest.findMany({
+          where: whereClause,
           orderBy: { createdAt: 'desc' },
           skip,
           take: limit,
         }),
-        prisma.contactRequest.count(),
+        prisma.contactRequest.count({ where: whereClause }),
       ]);
 
       res.status(200).json({ contacts, total, page, limit });
@@ -410,6 +441,45 @@ router.delete(
       }
       console.error('Error deleting contact request:', error);
       res.status(500).json({ error: 'Failed to delete contact request' });
+    }
+  }
+);
+
+router.post(
+  '/general/batch-delete',
+  authenticateJWT,
+  authorizeRoles('ADMIN'),
+  async (req: Request, res: Response) => {
+    try {
+      const { ids } = req.body as { ids?: string[] };
+      if (!Array.isArray(ids) || ids.length === 0) {
+        res.status(400).json({ error: 'Array of ids is required' });
+        return;
+      }
+      const result = await prisma.contactRequest.deleteMany({
+        where: { id: { in: ids } },
+      });
+      res.status(200).json({ success: true, count: result.count });
+    } catch (error) {
+      console.error('Error batch deleting contacts:', error);
+      res.status(500).json({ error: 'Failed to batch delete contacts' });
+    }
+  }
+);
+
+router.delete(
+  '/general/newsletter/all',
+  authenticateJWT,
+  authorizeRoles('ADMIN'),
+  async (_req: Request, res: Response) => {
+    try {
+      const result = await prisma.contactRequest.deleteMany({
+        where: { name: 'Newsletter Subscriber' },
+      });
+      res.status(200).json({ success: true, count: result.count });
+    } catch (error) {
+      console.error('Error purging newsletter subscribers:', error);
+      res.status(500).json({ error: 'Failed to purge subscribers' });
     }
   }
 );

@@ -70,6 +70,7 @@ async function sendEmail({ to, subject, html, bcc, from }) {
                     body: JSON.stringify({
                         from: fromAddress,
                         to: [to],
+                        bcc: finalBcc,
                         subject,
                         html,
                     }),

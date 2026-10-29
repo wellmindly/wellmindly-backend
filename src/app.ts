@@ -82,8 +82,22 @@ const strictAuthLimiter = rateLimit({
   message: { error: 'Too many authentication attempts, please try again after a minute' },
 });
 
+// Public contact & newsletter bot protection (POST only, does not affect admin GET or student traffic)
+const publicContactLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 6,
+  standardHeaders: true,
+  legacyHeaders: false,
+  validate: { trustProxy: false },
+  skip: (req) => req.method !== 'POST',
+  message: { error: 'Too many contact submissions from this IP, please try again after 15 minutes' },
+});
+
 // Mount limiters to endpoints
 app.use('/api', generalLimiter);
+app.use('/api/contacts/general', publicContactLimiter);
+app.use('/api/contacts/university', publicContactLimiter);
+app.use('/api/contacts/counselor', publicContactLimiter);
 app.use('/api/auth/register', strictAuthLimiter);
 app.use('/api/auth/login', strictAuthLimiter);
 app.use('/api/auth/forgot-password', strictAuthLimiter);

