@@ -23,4 +23,7 @@ ALTER TABLE "ContactRequest" DROP COLUMN IF EXISTS "verifiedAt";
 ALTER TABLE "ContactRequest" DROP COLUMN IF EXISTS "status";
 ALTER TABLE "ContactRequest" DROP COLUMN IF EXISTS "normalizedEmail";
 
+-- 4. Drop the fake archive table if rolling back
+DROP TABLE IF EXISTS "ArchivedFakeContactRequest";
+
 COMMIT;

@@ -102,7 +102,24 @@ WHERE ("name" IN ('Newsletter Subscriber', 'Newsletter Waitlist')
    OR "subject" ILIKE '%newsletter%')
   AND "subscriptionKey" IS NULL;
 
--- 7. Add database-level unique constraint on subscriptionKey and performance indexes
+-- 7. Create dedicated archive table for quarantined fake/bot submissions
+CREATE TABLE IF NOT EXISTS "ArchivedFakeContactRequest" (
+  "id" TEXT PRIMARY KEY,
+  "originalId" TEXT,
+  "name" TEXT NOT NULL,
+  "email" TEXT NOT NULL,
+  "normalizedEmail" TEXT,
+  "subject" TEXT,
+  "message" TEXT NOT NULL,
+  "classificationReasons" TEXT,
+  "botScore" INTEGER NOT NULL DEFAULT 100,
+  "originalCreatedAt" TIMESTAMP(3),
+  "archivedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS "ArchivedFakeContactRequest_normalizedEmail_idx" ON "ArchivedFakeContactRequest"("normalizedEmail");
+CREATE INDEX IF NOT EXISTS "ArchivedFakeContactRequest_archivedAt_idx" ON "ArchivedFakeContactRequest"("archivedAt");
+
+-- 8. Add database-level unique constraint on subscriptionKey and performance indexes
 CREATE UNIQUE INDEX IF NOT EXISTS "ContactRequest_subscriptionKey_key" ON "ContactRequest"("subscriptionKey");
 CREATE INDEX IF NOT EXISTS "ContactRequest_normalizedEmail_idx" ON "ContactRequest"("normalizedEmail");
 CREATE INDEX IF NOT EXISTS "ContactRequest_status_idx" ON "ContactRequest"("status");

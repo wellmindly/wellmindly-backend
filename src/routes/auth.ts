@@ -3,7 +3,7 @@ import { OAuth2Client } from 'google-auth-library';
 import prisma from '../lib/prisma';
 import { signToken } from '../lib/jwt';
 import { env } from '../config/env';
-import { sendEmail, getOtpTemplate } from '../utils/mailer';
+import { sendEmail, getOtpTemplate, getAccountDeletedTemplate } from '../utils/mailer';
 import { authenticateJWT } from '../utils/jwt';
 import { isStudentEligible } from '../services/accessControl';
 
@@ -542,6 +542,192 @@ router.post('/waitlist', async (req: Request, res: Response) => {
   } catch (err: any) {
     console.error('Waitlist error:', err);
     res.status(500).json({ error: 'Failed to join waitlist. Please try again.' });
+  }
+});
+
+const deleteOtpStore = new Map<string, OtpEntry>();
+
+async function deleteUserAndAssociatedData(userId: string) {
+  // 1. Delete student counselor sessions
+  await prisma.counselorSession.deleteMany({
+    where: { studentId: userId },
+  });
+
+  // 2. Unassign audit logs to preserve audit chain without orphan FK
+  await prisma.auditLog.updateMany({
+    where: { actorId: userId },
+    data: { actorId: null },
+  });
+
+  // 3. Delete user record (cascading deletes quizResults, chatMessages, dailyCheckins, talkNotes, talkReplies, talkReactions, talkReports, notifications)
+  return await prisma.user.delete({
+    where: { id: userId },
+  });
+}
+
+/**
+ * POST /api/auth/delete-account/send-otp
+ *
+ * Public Google Play Store compliant data deletion request endpoint.
+ * Dispatches a 6-digit verification code to confirm user identity.
+ */
+router.post('/delete-account/send-otp', async (req: Request, res: Response) => {
+  try {
+    const { email } = req.body as { email?: string };
+    if (!email) {
+      res.status(400).json({ error: 'Email address is required' });
+      return;
+    }
+
+    const emailLower = email.toLowerCase().trim();
+    const user = await prisma.user.findUnique({
+      where: { email: emailLower },
+    });
+
+    if (!user) {
+      // Safe generic message to avoid email enumeration
+      res.status(200).json({
+        success: true,
+        message: 'If an active account is linked to this email, a verification code has been sent.',
+      });
+      return;
+    }
+
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = Date.now() + 15 * 60 * 1000; // 15 mins
+
+    deleteOtpStore.set(emailLower, { code, expiresAt });
+
+    await sendEmail({
+      to: emailLower,
+      bcc: 'wellmindly@gmail.com',
+      subject: 'Confirm Account & Data Deletion - WellMindly',
+      html: getOtpTemplate(code, 'delete_account'),
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'Verification code sent to your registered email address.',
+    });
+  } catch (err: any) {
+    console.error('Delete account OTP error:', err);
+    res.status(500).json({ error: 'Failed to process deletion request. Please try again.' });
+  }
+});
+
+/**
+ * POST /api/auth/delete-account/confirm
+ *
+ * Verifies OTP and permanently deletes user and all associated data.
+ */
+router.post('/delete-account/confirm', async (req: Request, res: Response) => {
+  try {
+    const { email, otp } = req.body as { email?: string; otp?: string };
+    if (!email || !otp) {
+      res.status(400).json({ error: 'Email and verification code are required' });
+      return;
+    }
+
+    const emailLower = email.toLowerCase().trim();
+    const stored = deleteOtpStore.get(emailLower);
+
+    if (!stored) {
+      res.status(400).json({ error: 'Please request a verification code first' });
+      return;
+    }
+
+    if (Date.now() > stored.expiresAt) {
+      deleteOtpStore.delete(emailLower);
+      res.status(400).json({ error: 'Verification code has expired. Please request a new code.' });
+      return;
+    }
+
+    if (stored.code !== otp.trim()) {
+      res.status(400).json({ error: 'Invalid verification code' });
+      return;
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { email: emailLower },
+    });
+
+    if (user) {
+      await deleteUserAndAssociatedData(user.id);
+
+      // Send deletion confirmation email
+      try {
+        await sendEmail({
+          to: emailLower,
+          bcc: 'wellmindly@gmail.com',
+          subject: 'Your WellMindly Account & Data Have Been Deleted',
+          html: getAccountDeletedTemplate(user.firstName),
+        });
+      } catch (mailErr) {
+        console.error('Failed to send deletion confirmation email:', mailErr);
+      }
+    }
+
+    deleteOtpStore.delete(emailLower);
+
+    res.status(200).json({
+      success: true,
+      message: 'Your WellMindly account and all associated personal data have been permanently erased.',
+    });
+  } catch (err: any) {
+    console.error('Confirm account deletion error:', err);
+    res.status(500).json({ error: 'Failed to delete account. Please contact support.' });
+  }
+});
+
+/**
+ * DELETE /api/auth/account
+ *
+ * Authenticated in-app account & data deletion.
+ */
+router.delete('/account', authenticateJWT, async (req: Request, res: Response) => {
+  try {
+    const userId = req.user?.sub;
+    const email = req.user?.email;
+
+    if (!userId && !email) {
+      res.status(401).json({ error: 'Unauthorized: missing user identity' });
+      return;
+    }
+
+    const user = await prisma.user.findFirst({
+      where: {
+        OR: [
+          ...(userId ? [{ id: userId }] : []),
+          ...(email ? [{ email }] : []),
+        ],
+      },
+    });
+
+    if (!user) {
+      res.status(404).json({ error: 'Account not found' });
+      return;
+    }
+
+    await deleteUserAndAssociatedData(user.id);
+
+    try {
+      await sendEmail({
+        to: user.email,
+        bcc: 'wellmindly@gmail.com',
+        subject: 'Your WellMindly Account & Data Have Been Deleted',
+        html: getAccountDeletedTemplate(user.firstName),
+      });
+    } catch (mailErr) {
+      console.error('Failed to send in-app deletion confirmation email:', mailErr);
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Your account and all associated personal data have been permanently erased.',
+    });
+  } catch (err: any) {
+    console.error('In-app account deletion error:', err);
+    res.status(500).json({ error: 'Failed to delete account. Please contact support.' });
   }
 });
 

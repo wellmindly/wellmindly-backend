@@ -203,6 +203,23 @@ model ContactRequest {
   @@index([status])
 }
 
+model ArchivedFakeContactRequest {
+  id                    String    @id @default(uuid())
+  originalId            String?
+  name                  String
+  email                 String
+  normalizedEmail       String?
+  subject               String?
+  message               String    @db.Text
+  classificationReasons String?   @db.Text
+  botScore              Int       @default(100)
+  originalCreatedAt     DateTime?
+  archivedAt            DateTime  @default(now())
+
+  @@index([normalizedEmail])
+  @@index([archivedAt])
+}
+
 model UniversityOnboarding {
   id             String   @id @default(uuid())
   name           String

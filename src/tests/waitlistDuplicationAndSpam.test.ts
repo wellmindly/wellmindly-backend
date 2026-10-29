@@ -5,6 +5,7 @@ import app from '../app';
 import { resetRateLimitStoresForTesting } from '../middleware/waitlistProtection';
 import { waitlistMetrics } from '../utils/waitlistLogger';
 import { analyzeSubscribers } from '../utils/subscriberAuditor';
+import { classifySubscriber } from '../utils/subscriberClassifier';
 
 // In-memory contact request store to simulate PostgreSQL database behavior
 let mockDbContactRequests: any[] = [];
@@ -516,6 +517,81 @@ describe('Waitlist & Newsletter Abuse, Spam, and Duplicate Prevention Test Suite
           );
         }
       }
+    });
+  });
+
+  describe('Real vs Fake Subscriber Intelligent Classifier', () => {
+    it('classifies legitimate university and human subscribers as REAL', () => {
+      const realSamples = [
+        'student@stanford.edu',
+        'scholar@oxford.ac.uk',
+        'counselling@iitb.ac.in',
+        'frank.nienstedt@gmx.de',
+        'claus@claus-gassner.de',
+        'izabela.wegierkiewicz@gpd.com.pl',
+        'stefanie-jung@t-online.de',
+        'andreas.heese1977@googlemail.com',
+        'luzia.zirondi@outlook.com',
+        'marciarocha.ms@hotmail.com',
+        'genesherman@earthlink.net',
+      ];
+
+      for (const email of realSamples) {
+        const result = classifySubscriber(email, 1);
+        expect(result.isFake).toBe(false);
+        expect(result.score).toBeLessThan(60);
+      }
+    });
+
+    it('identifies automated CVCV syllable bot generators as FAKE', () => {
+      const cvcBotSamples = [
+        'ubavucuqepi58@gmail.com',
+        'opufonezexa799@gmail.com',
+        'fikiqonubu42@gmail.com',
+        'licehajowe486@gmail.com',
+        'yuqodujol509@gmail.com',
+        'ipevumizob47@gmail.com',
+        'ogabocom76@gmail.com',
+        'uhayexal679@gmail.com',
+      ];
+
+      for (const email of cvcBotSamples) {
+        const result = classifySubscriber(email, 5);
+        expect(result.isFake).toBe(true);
+        expect(result.score).toBeGreaterThanOrEqual(60);
+      }
+    });
+
+    it('identifies dot-trick spammers as FAKE', () => {
+      const dotTrickSamples = [
+        'a.ho.j.ujuy.i.ye.98@gmail.com',
+        'f.iv.o.b.e.nuz.65@gmail.com',
+        'a.d.ila.x.e.d.4.7@gmail.com',
+        'mi.k.e.t.a.te.y.ou.n.g@gmail.com',
+      ];
+
+      for (const email of dotTrickSamples) {
+        const result = classifySubscriber(email, 1);
+        expect(result.isFake).toBe(true);
+        expect(result.reasons.some((r) => r.includes('Dot-trick'))).toBe(true);
+      }
+    });
+
+    it('identifies unpronounceable keyboard mash and disposable domains as FAKE', () => {
+      const mashSamples = [
+        'ffreyyebrhggh@outlook.com',
+        'gdvtgc@yahoo.com',
+        'nhjldvovvwbimrc-60282@re.viremond.site',
+      ];
+
+      for (const email of mashSamples) {
+        const result = classifySubscriber(email, 1);
+        expect(result.isFake).toBe(true);
+      }
+
+      const disposableResult = classifySubscriber('bot@mailinator.com', 1);
+      expect(disposableResult.isFake).toBe(true);
+      expect(disposableResult.reasons.some((r) => r.includes('Disposable'))).toBe(true);
     });
   });
 });

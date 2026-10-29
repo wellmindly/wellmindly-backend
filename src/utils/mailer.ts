@@ -130,11 +130,18 @@ ${code ? `Code: ${code}\n` : ''}${link ? `Link: ${link}\n` : ''}================
   `);
 }
 
-export function getOtpTemplate(code: string, purpose: 'register' | 'forgot_password'): string {
-  const title = purpose === 'register' ? 'Verify Your Account' : 'Reset Your Password';
+export function getOtpTemplate(code: string, purpose: 'register' | 'forgot_password' | 'delete_account'): string {
+  const title = purpose === 'register' 
+    ? 'Verify Your Account' 
+    : purpose === 'forgot_password' 
+    ? 'Reset Your Password' 
+    : 'Confirm Account & Data Deletion';
+
   const subtitle = purpose === 'register' 
-    ? 'Thank you for joining Wellmindly. Use the verification code below to complete your registration.'
-    : 'We received a request to reset your password. Use the verification code below to proceed.';
+    ? 'Thank you for joining WellMindly. Use the verification code below to complete your registration.'
+    : purpose === 'forgot_password'
+    ? 'We received a request to reset your password. Use the verification code below to proceed.'
+    : 'We received a request to permanently delete your WellMindly account and all associated personal data. Use the verification code below to confirm.';
   
   return `
 <!DOCTYPE html>
@@ -280,7 +287,52 @@ export function getOtpTemplate(code: string, purpose: 'register' | 'forgot_passw
     </div>
     <div class="footer">
       <p class="footer-text">&copy; 2026 WellMindly. All rights reserved.</p>
-      <p class="footer-text" style="margin-top: 4px; font-style: italic;">Empowering minds, step by step.</p>
+    </div>
+  </div>
+</body>
+</html>
+  `;
+}
+
+export function getAccountDeletedTemplate(name?: string): string {
+  const safeName = name ? escapeHtml(name) : 'there';
+  return `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Account Deleted - WellMindly</title>
+</head>
+<body style="font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #1e293b; background-color: #f8fafc; padding: 24px; margin: 0;">
+  <div style="max-width: 600px; margin: 0 auto; background: #ffffff; border-radius: 20px; padding: 36px; border: 1px solid #e2e8f0; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);">
+    <div style="text-align: center; margin-bottom: 24px;">
+      <h2 style="color: #ef4444; margin: 0; font-size: 22px;">Account & Data Deletion Confirmed</h2>
+      <p style="color: #64748b; font-size: 14px; margin-top: 6px;">WellMindly Data Protection Notice</p>
+    </div>
+    
+    <p>Hello <strong>${safeName}</strong>,</p>
+    <p>This email confirms that your <strong>WellMindly</strong> account and all associated personal data have been permanently erased from our production databases.</p>
+    
+    <div style="background-color: #fef2f2; border: 1px solid #fee2e2; border-radius: 12px; padding: 20px; margin: 24px 0;">
+      <h3 style="font-size: 14px; text-transform: uppercase; letter-spacing: 0.5px; color: #991b1b; margin-top: 0; margin-bottom: 10px;">
+        Permanently Erased Data:
+      </h3>
+      <ul style="color: #7f1d1d; font-size: 13.5px; line-height: 1.7; margin: 0; padding-left: 20px;">
+        <li>Your profile identity (name, email address, password hash, university domain)</li>
+        <li>All daily check-in histories, emotional trajectories, and mood records</li>
+        <li>All assessment responses, questionnaires, and PHQ-9 survey logs</li>
+        <li>TalkMindly community pseudonyms, discussion posts, replies, and reactions</li>
+        <li>All counseling appointment records and booking histories</li>
+      </ul>
+    </div>
+
+    <p style="font-size: 13px; color: #64748b; line-height: 1.6;">
+      No further action is required from you. If you ever wish to return in the future, you are welcome to create a fresh account at any time.
+    </p>
+
+    <div style="margin-top: 32px; padding-top: 20px; border-top: 1px solid #e2e8f0; text-align: center; font-size: 12px; color: #94a3b8;">
+      <p style="margin: 0;">&copy; 2026 WellMindly. All rights reserved.</p>
+      <p style="margin: 4px 0 0 0;">If you have any questions, reach out to info@wellmindly.com</p>
     </div>
   </div>
 </body>
@@ -458,7 +510,6 @@ export function getPasswordResetLinkTemplate({
     </div>
     <div class="footer">
       <p class="footer-text">&copy; 2026 WellMindly. All rights reserved.</p>
-      <p class="footer-text" style="margin-top: 4px; font-style: italic;">Empowering minds, step by step.</p>
     </div>
   </div>
 </body>

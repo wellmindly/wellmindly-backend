@@ -48,8 +48,8 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.BypassEmailScalarFieldEnum = exports.AllowedUniversityDomainScalarFieldEnum = exports.NotificationScalarFieldEnum = exports.AuditLogScalarFieldEnum = exports.CounselorInvitationScalarFieldEnum = exports.CounselorFeedbackScalarFieldEnum = exports.StudentFeedbackScalarFieldEnum = exports.SessionNoteScalarFieldEnum = exports.CounselorSessionScalarFieldEnum = exports.CounselorAvailabilityExceptionScalarFieldEnum = exports.CounselorAvailabilityScalarFieldEnum = exports.CounselorProfileScalarFieldEnum = exports.TalkReportScalarFieldEnum = exports.TalkReactionScalarFieldEnum = exports.TalkReplyScalarFieldEnum = exports.TalkNoteScalarFieldEnum = exports.TalkRoomScalarFieldEnum = exports.CounselorOnboardingScalarFieldEnum = exports.UniversityOnboardingScalarFieldEnum = exports.ContactRequestScalarFieldEnum = exports.CrisisHotlineScalarFieldEnum = exports.DailyCheckinScalarFieldEnum = exports.WaitlistScalarFieldEnum = exports.ChatMessageScalarFieldEnum = exports.QuizFeedbackScalarFieldEnum = exports.QuizResultScalarFieldEnum = exports.QuestionOptionScalarFieldEnum = exports.QuestionScalarFieldEnum = exports.QuizScalarFieldEnum = exports.UniversityScalarFieldEnum = exports.UserScalarFieldEnum = exports.TransactionIsolationLevel = exports.ModelName = exports.AnyNull = exports.JsonNull = exports.DbNull = exports.NullTypes = exports.prismaVersion = exports.getExtensionContext = exports.Decimal = exports.Sql = exports.raw = exports.join = exports.empty = exports.sql = exports.PrismaClientValidationError = exports.PrismaClientInitializationError = exports.PrismaClientRustPanicError = exports.PrismaClientUnknownRequestError = exports.PrismaClientKnownRequestError = void 0;
-exports.defineExtension = exports.JsonNullValueFilter = exports.NullsOrder = exports.QueryMode = exports.NullableJsonNullValueInput = exports.SortOrder = void 0;
+exports.AllowedUniversityDomainScalarFieldEnum = exports.NotificationScalarFieldEnum = exports.AuditLogScalarFieldEnum = exports.CounselorInvitationScalarFieldEnum = exports.CounselorFeedbackScalarFieldEnum = exports.StudentFeedbackScalarFieldEnum = exports.SessionNoteScalarFieldEnum = exports.CounselorSessionScalarFieldEnum = exports.CounselorAvailabilityExceptionScalarFieldEnum = exports.CounselorAvailabilityScalarFieldEnum = exports.CounselorProfileScalarFieldEnum = exports.TalkReportScalarFieldEnum = exports.TalkReactionScalarFieldEnum = exports.TalkReplyScalarFieldEnum = exports.TalkNoteScalarFieldEnum = exports.TalkRoomScalarFieldEnum = exports.CounselorOnboardingScalarFieldEnum = exports.UniversityOnboardingScalarFieldEnum = exports.ArchivedFakeContactRequestScalarFieldEnum = exports.ContactRequestScalarFieldEnum = exports.CrisisHotlineScalarFieldEnum = exports.DailyCheckinScalarFieldEnum = exports.WaitlistScalarFieldEnum = exports.ChatMessageScalarFieldEnum = exports.QuizFeedbackScalarFieldEnum = exports.QuizResultScalarFieldEnum = exports.QuestionOptionScalarFieldEnum = exports.QuestionScalarFieldEnum = exports.QuizScalarFieldEnum = exports.UniversityScalarFieldEnum = exports.UserScalarFieldEnum = exports.TransactionIsolationLevel = exports.ModelName = exports.AnyNull = exports.JsonNull = exports.DbNull = exports.NullTypes = exports.prismaVersion = exports.getExtensionContext = exports.Decimal = exports.Sql = exports.raw = exports.join = exports.empty = exports.sql = exports.PrismaClientValidationError = exports.PrismaClientInitializationError = exports.PrismaClientRustPanicError = exports.PrismaClientUnknownRequestError = exports.PrismaClientKnownRequestError = void 0;
+exports.defineExtension = exports.JsonNullValueFilter = exports.NullsOrder = exports.QueryMode = exports.NullableJsonNullValueInput = exports.SortOrder = exports.BypassEmailScalarFieldEnum = void 0;
 const runtime = __importStar(require("@prisma/client/runtime/client"));
 /**
  * Prisma Errors
@@ -116,6 +116,7 @@ exports.ModelName = {
     DailyCheckin: 'DailyCheckin',
     CrisisHotline: 'CrisisHotline',
     ContactRequest: 'ContactRequest',
+    ArchivedFakeContactRequest: 'ArchivedFakeContactRequest',
     UniversityOnboarding: 'UniversityOnboarding',
     CounselorOnboarding: 'CounselorOnboarding',
     TalkRoom: 'TalkRoom',
@@ -252,6 +253,19 @@ exports.ContactRequestScalarFieldEnum = {
     verificationExpiresAt: 'verificationExpiresAt',
     subscriptionKey: 'subscriptionKey',
     createdAt: 'createdAt'
+};
+exports.ArchivedFakeContactRequestScalarFieldEnum = {
+    id: 'id',
+    originalId: 'originalId',
+    name: 'name',
+    email: 'email',
+    normalizedEmail: 'normalizedEmail',
+    subject: 'subject',
+    message: 'message',
+    classificationReasons: 'classificationReasons',
+    botScore: 'botScore',
+    originalCreatedAt: 'originalCreatedAt',
+    archivedAt: 'archivedAt'
 };
 exports.UniversityOnboardingScalarFieldEnum = {
     id: 'id',

@@ -14,6 +14,7 @@ import {
   getClientIp,
 } from '../middleware/waitlistProtection';
 import { logWaitlistEvent, waitlistMetrics, maskEmail, generateRequestId } from '../utils/waitlistLogger';
+import { classifySubscriber } from '../utils/subscriberClassifier';
 
 const router = Router();
 
@@ -694,12 +695,15 @@ router.get(
           AND: [
             { name: { notIn: ['Newsletter Subscriber', 'Newsletter Waitlist'] } },
             {
-              NOT: {
-                OR: [
-                  { subject: { contains: 'waitlist', mode: 'insensitive' } },
-                  { subject: { contains: 'newsletter', mode: 'insensitive' } },
-                ],
-              },
+              OR: [
+                { subject: null },
+                {
+                  AND: [
+                    { subject: { not: { contains: 'waitlist', mode: 'insensitive' } } },
+                    { subject: { not: { contains: 'newsletter', mode: 'insensitive' } } },
+                  ],
+                },
+              ],
             },
           ],
         };
@@ -909,13 +913,13 @@ router.post(
   }
 );
 
-router.delete(
-  '/general/newsletter/all',
+router.post(
+  '/general/newsletter/archive-fake-bots',
   authenticateJWT,
   authorizeRoles('ADMIN'),
   async (_req: Request, res: Response) => {
     try {
-      const result = await prisma.contactRequest.deleteMany({
+      const records = await prisma.contactRequest.findMany({
         where: {
           OR: [
             { name: { in: ['Newsletter Subscriber', 'Newsletter Waitlist'] } },
@@ -924,7 +928,127 @@ router.delete(
           ],
         },
       });
-      res.status(200).json({ success: true, count: result.count });
+
+      const counts = new Map<string, number>();
+      for (const r of records) {
+        const norm = (r.normalizedEmail || r.email).trim().toLowerCase();
+        counts.set(norm, (counts.get(norm) || 0) + 1);
+      }
+
+      const fakeIds: string[] = [];
+      const fakeRecordsToArchive: any[] = [];
+      let realCount = 0;
+
+      for (const r of records) {
+        const norm = (r.normalizedEmail || r.email).trim().toLowerCase();
+        const classification = classifySubscriber(r.email, counts.get(norm) || 1);
+
+        if (classification.isFake) {
+          fakeIds.push(r.id);
+          fakeRecordsToArchive.push({
+            originalId: r.id,
+            name: r.name,
+            email: r.email,
+            normalizedEmail: norm,
+            subject: r.subject,
+            message: r.message,
+            classificationReasons: classification.reasons.join('; '),
+            botScore: classification.score,
+            originalCreatedAt: r.createdAt,
+          });
+        } else {
+          realCount++;
+        }
+      }
+
+      if (fakeRecordsToArchive.length > 0) {
+        await prisma.archivedFakeContactRequest.createMany({
+          data: fakeRecordsToArchive,
+        });
+        await prisma.contactRequest.deleteMany({
+          where: { id: { in: fakeIds } },
+        });
+      }
+
+      res.status(200).json({
+        success: true,
+        archivedCount: fakeIds.length,
+        retainedRealCount: realCount,
+        message: `Successfully quarantined ${fakeIds.length} bot submissions. Preserved ${realCount} real subscribers.`,
+      });
+    } catch (error) {
+      console.error('Error archiving fake bot subscribers:', error);
+      res.status(500).json({ error: 'Failed to archive fake bot subscribers' });
+    }
+  }
+);
+
+router.delete(
+  '/general/newsletter/all',
+  authenticateJWT,
+  authorizeRoles('ADMIN'),
+  async (_req: Request, res: Response) => {
+    try {
+      // Safe guard: NEVER delete all newsletter subscribers indiscriminately.
+      // Filter out fake ones and archive them, keeping real subscribers intact.
+      const records = await prisma.contactRequest.findMany({
+        where: {
+          OR: [
+            { name: { in: ['Newsletter Subscriber', 'Newsletter Waitlist'] } },
+            { subject: { contains: 'waitlist', mode: 'insensitive' } },
+            { subject: { contains: 'newsletter', mode: 'insensitive' } },
+          ],
+        },
+      });
+
+      const counts = new Map<string, number>();
+      for (const r of records) {
+        const norm = (r.normalizedEmail || r.email).trim().toLowerCase();
+        counts.set(norm, (counts.get(norm) || 0) + 1);
+      }
+
+      const fakeIds: string[] = [];
+      const fakeRecordsToArchive: any[] = [];
+      let realCount = 0;
+
+      for (const r of records) {
+        const norm = (r.normalizedEmail || r.email).trim().toLowerCase();
+        const classification = classifySubscriber(r.email, counts.get(norm) || 1);
+
+        if (classification.isFake) {
+          fakeIds.push(r.id);
+          fakeRecordsToArchive.push({
+            originalId: r.id,
+            name: r.name,
+            email: r.email,
+            normalizedEmail: norm,
+            subject: r.subject,
+            message: r.message,
+            classificationReasons: classification.reasons.join('; '),
+            botScore: classification.score,
+            originalCreatedAt: r.createdAt,
+          });
+        } else {
+          realCount++;
+        }
+      }
+
+      if (fakeRecordsToArchive.length > 0) {
+        await prisma.archivedFakeContactRequest.createMany({
+          data: fakeRecordsToArchive,
+        });
+        await prisma.contactRequest.deleteMany({
+          where: { id: { in: fakeIds } },
+        });
+      }
+
+      res.status(200).json({
+        success: true,
+        count: fakeIds.length,
+        archivedCount: fakeIds.length,
+        retainedRealCount: realCount,
+        message: `Successfully quarantined ${fakeIds.length} bot submissions. Preserved ${realCount} real subscribers.`,
+      });
     } catch (error) {
       console.error('Error purging newsletter subscribers:', error);
       res.status(500).json({ error: 'Failed to purge subscribers' });

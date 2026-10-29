@@ -101,6 +101,7 @@ app.use('/api/contacts/counselor', publicContactLimiter);
 app.use('/api/auth/register', strictAuthLimiter);
 app.use('/api/auth/login', strictAuthLimiter);
 app.use('/api/auth/forgot-password', strictAuthLimiter);
+app.use('/api/auth/delete-account', strictAuthLimiter);
 app.use('/api/v1/counselors/login', strictAuthLimiter);
 app.use('/api/v1/counselors/forgot-password', strictAuthLimiter);
 app.use('/api/v1/counselors/reset-password', strictAuthLimiter);

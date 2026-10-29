@@ -43,6 +43,7 @@ const app_1 = __importDefault(require("../app"));
 const waitlistProtection_1 = require("../middleware/waitlistProtection");
 const waitlistLogger_1 = require("../utils/waitlistLogger");
 const subscriberAuditor_1 = require("../utils/subscriberAuditor");
+const subscriberClassifier_1 = require("../utils/subscriberClassifier");
 // In-memory contact request store to simulate PostgreSQL database behavior
 let mockDbContactRequests = [];
 // Mock mailer
@@ -489,6 +490,72 @@ vitest_1.vi.mock('../lib/prisma', () => ({
                     (0, vitest_1.expect)(new Date(primaryRecord.createdAt).getTime()).toBeLessThanOrEqual(new Date(duplicateInstance.createdAt).getTime());
                 }
             }
+        });
+    });
+    (0, vitest_1.describe)('Real vs Fake Subscriber Intelligent Classifier', () => {
+        (0, vitest_1.it)('classifies legitimate university and human subscribers as REAL', () => {
+            const realSamples = [
+                'student@stanford.edu',
+                'scholar@oxford.ac.uk',
+                'counselling@iitb.ac.in',
+                'frank.nienstedt@gmx.de',
+                'claus@claus-gassner.de',
+                'izabela.wegierkiewicz@gpd.com.pl',
+                'stefanie-jung@t-online.de',
+                'andreas.heese1977@googlemail.com',
+                'luzia.zirondi@outlook.com',
+                'marciarocha.ms@hotmail.com',
+                'genesherman@earthlink.net',
+            ];
+            for (const email of realSamples) {
+                const result = (0, subscriberClassifier_1.classifySubscriber)(email, 1);
+                (0, vitest_1.expect)(result.isFake).toBe(false);
+                (0, vitest_1.expect)(result.score).toBeLessThan(60);
+            }
+        });
+        (0, vitest_1.it)('identifies automated CVCV syllable bot generators as FAKE', () => {
+            const cvcBotSamples = [
+                'ubavucuqepi58@gmail.com',
+                'opufonezexa799@gmail.com',
+                'fikiqonubu42@gmail.com',
+                'licehajowe486@gmail.com',
+                'yuqodujol509@gmail.com',
+                'ipevumizob47@gmail.com',
+                'ogabocom76@gmail.com',
+                'uhayexal679@gmail.com',
+            ];
+            for (const email of cvcBotSamples) {
+                const result = (0, subscriberClassifier_1.classifySubscriber)(email, 5);
+                (0, vitest_1.expect)(result.isFake).toBe(true);
+                (0, vitest_1.expect)(result.score).toBeGreaterThanOrEqual(60);
+            }
+        });
+        (0, vitest_1.it)('identifies dot-trick spammers as FAKE', () => {
+            const dotTrickSamples = [
+                'a.ho.j.ujuy.i.ye.98@gmail.com',
+                'f.iv.o.b.e.nuz.65@gmail.com',
+                'a.d.ila.x.e.d.4.7@gmail.com',
+                'mi.k.e.t.a.te.y.ou.n.g@gmail.com',
+            ];
+            for (const email of dotTrickSamples) {
+                const result = (0, subscriberClassifier_1.classifySubscriber)(email, 1);
+                (0, vitest_1.expect)(result.isFake).toBe(true);
+                (0, vitest_1.expect)(result.reasons.some((r) => r.includes('Dot-trick'))).toBe(true);
+            }
+        });
+        (0, vitest_1.it)('identifies unpronounceable keyboard mash and disposable domains as FAKE', () => {
+            const mashSamples = [
+                'ffreyyebrhggh@outlook.com',
+                'gdvtgc@yahoo.com',
+                'nhjldvovvwbimrc-60282@re.viremond.site',
+            ];
+            for (const email of mashSamples) {
+                const result = (0, subscriberClassifier_1.classifySubscriber)(email, 1);
+                (0, vitest_1.expect)(result.isFake).toBe(true);
+            }
+            const disposableResult = (0, subscriberClassifier_1.classifySubscriber)('bot@mailinator.com', 1);
+            (0, vitest_1.expect)(disposableResult.isFake).toBe(true);
+            (0, vitest_1.expect)(disposableResult.reasons.some((r) => r.includes('Disposable'))).toBe(true);
         });
     });
 });

@@ -14,6 +14,7 @@ const escapeHtml_1 = require("../utils/escapeHtml");
 const env_1 = require("../config/env");
 const waitlistProtection_1 = require("../middleware/waitlistProtection");
 const waitlistLogger_1 = require("../utils/waitlistLogger");
+const subscriberClassifier_1 = require("../utils/subscriberClassifier");
 const router = (0, express_1.Router)();
 const generalContactSchema = zod_1.z.object({
     name: zod_1.z.string().min(1, 'Name is required').trim(),
@@ -631,12 +632,15 @@ router.get('/general', jwt_1.authenticateJWT, (0, jwt_1.authorizeRoles)('ADMIN')
                 AND: [
                     { name: { notIn: ['Newsletter Subscriber', 'Newsletter Waitlist'] } },
                     {
-                        NOT: {
-                            OR: [
-                                { subject: { contains: 'waitlist', mode: 'insensitive' } },
-                                { subject: { contains: 'newsletter', mode: 'insensitive' } },
-                            ],
-                        },
+                        OR: [
+                            { subject: null },
+                            {
+                                AND: [
+                                    { subject: { not: { contains: 'waitlist', mode: 'insensitive' } } },
+                                    { subject: { not: { contains: 'newsletter', mode: 'insensitive' } } },
+                                ],
+                            },
+                        ],
                     },
                 ],
             };
@@ -817,9 +821,9 @@ router.post('/general/batch-delete', jwt_1.authenticateJWT, (0, jwt_1.authorizeR
         res.status(500).json({ error: 'Failed to batch delete contacts' });
     }
 });
-router.delete('/general/newsletter/all', jwt_1.authenticateJWT, (0, jwt_1.authorizeRoles)('ADMIN'), async (_req, res) => {
+router.post('/general/newsletter/archive-fake-bots', jwt_1.authenticateJWT, (0, jwt_1.authorizeRoles)('ADMIN'), async (_req, res) => {
     try {
-        const result = await prisma_1.default.contactRequest.deleteMany({
+        const records = await prisma_1.default.contactRequest.findMany({
             where: {
                 OR: [
                     { name: { in: ['Newsletter Subscriber', 'Newsletter Waitlist'] } },
@@ -828,7 +832,112 @@ router.delete('/general/newsletter/all', jwt_1.authenticateJWT, (0, jwt_1.author
                 ],
             },
         });
-        res.status(200).json({ success: true, count: result.count });
+        const counts = new Map();
+        for (const r of records) {
+            const norm = (r.normalizedEmail || r.email).trim().toLowerCase();
+            counts.set(norm, (counts.get(norm) || 0) + 1);
+        }
+        const fakeIds = [];
+        const fakeRecordsToArchive = [];
+        let realCount = 0;
+        for (const r of records) {
+            const norm = (r.normalizedEmail || r.email).trim().toLowerCase();
+            const classification = (0, subscriberClassifier_1.classifySubscriber)(r.email, counts.get(norm) || 1);
+            if (classification.isFake) {
+                fakeIds.push(r.id);
+                fakeRecordsToArchive.push({
+                    originalId: r.id,
+                    name: r.name,
+                    email: r.email,
+                    normalizedEmail: norm,
+                    subject: r.subject,
+                    message: r.message,
+                    classificationReasons: classification.reasons.join('; '),
+                    botScore: classification.score,
+                    originalCreatedAt: r.createdAt,
+                });
+            }
+            else {
+                realCount++;
+            }
+        }
+        if (fakeRecordsToArchive.length > 0) {
+            await prisma_1.default.archivedFakeContactRequest.createMany({
+                data: fakeRecordsToArchive,
+            });
+            await prisma_1.default.contactRequest.deleteMany({
+                where: { id: { in: fakeIds } },
+            });
+        }
+        res.status(200).json({
+            success: true,
+            archivedCount: fakeIds.length,
+            retainedRealCount: realCount,
+            message: `Successfully quarantined ${fakeIds.length} bot submissions. Preserved ${realCount} real subscribers.`,
+        });
+    }
+    catch (error) {
+        console.error('Error archiving fake bot subscribers:', error);
+        res.status(500).json({ error: 'Failed to archive fake bot subscribers' });
+    }
+});
+router.delete('/general/newsletter/all', jwt_1.authenticateJWT, (0, jwt_1.authorizeRoles)('ADMIN'), async (_req, res) => {
+    try {
+        // Safe guard: NEVER delete all newsletter subscribers indiscriminately.
+        // Filter out fake ones and archive them, keeping real subscribers intact.
+        const records = await prisma_1.default.contactRequest.findMany({
+            where: {
+                OR: [
+                    { name: { in: ['Newsletter Subscriber', 'Newsletter Waitlist'] } },
+                    { subject: { contains: 'waitlist', mode: 'insensitive' } },
+                    { subject: { contains: 'newsletter', mode: 'insensitive' } },
+                ],
+            },
+        });
+        const counts = new Map();
+        for (const r of records) {
+            const norm = (r.normalizedEmail || r.email).trim().toLowerCase();
+            counts.set(norm, (counts.get(norm) || 0) + 1);
+        }
+        const fakeIds = [];
+        const fakeRecordsToArchive = [];
+        let realCount = 0;
+        for (const r of records) {
+            const norm = (r.normalizedEmail || r.email).trim().toLowerCase();
+            const classification = (0, subscriberClassifier_1.classifySubscriber)(r.email, counts.get(norm) || 1);
+            if (classification.isFake) {
+                fakeIds.push(r.id);
+                fakeRecordsToArchive.push({
+                    originalId: r.id,
+                    name: r.name,
+                    email: r.email,
+                    normalizedEmail: norm,
+                    subject: r.subject,
+                    message: r.message,
+                    classificationReasons: classification.reasons.join('; '),
+                    botScore: classification.score,
+                    originalCreatedAt: r.createdAt,
+                });
+            }
+            else {
+                realCount++;
+            }
+        }
+        if (fakeRecordsToArchive.length > 0) {
+            await prisma_1.default.archivedFakeContactRequest.createMany({
+                data: fakeRecordsToArchive,
+            });
+            await prisma_1.default.contactRequest.deleteMany({
+                where: { id: { in: fakeIds } },
+            });
+        }
+        res.status(200).json({
+            success: true,
+            count: fakeIds.length,
+            archivedCount: fakeIds.length,
+            retainedRealCount: realCount,
+            message: `Successfully quarantined ${fakeIds.length} bot submissions. Preserved ${realCount} real subscribers.`,
+        });
     }
     catch (error) {
         console.error('Error purging newsletter subscribers:', error);
