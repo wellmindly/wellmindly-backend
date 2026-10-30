@@ -15,6 +15,7 @@ const env_1 = require("../config/env");
 const waitlistProtection_1 = require("../middleware/waitlistProtection");
 const waitlistLogger_1 = require("../utils/waitlistLogger");
 const subscriberClassifier_1 = require("../utils/subscriberClassifier");
+const contactSchema_1 = require("../services/contactSchema");
 const router = (0, express_1.Router)();
 const generalContactSchema = zod_1.z.object({
     name: zod_1.z.string().min(1, 'Name is required').trim(),
@@ -50,6 +51,7 @@ router.post('/general', waitlistProtection_1.waitlistProtectionMiddleware, async
     const requestId = req.requestId || (0, waitlistLogger_1.generateRequestId)();
     const clientIp = (0, waitlistProtection_1.getClientIp)(req);
     try {
+        await (0, contactSchema_1.ensureContactRequestSchema)();
         const data = generalContactSchema.parse(req.body);
         const normEmail = (0, waitlistProtection_1.normalizeEmail)(data.email);
         const isNewsletter = data.name === 'Newsletter Subscriber' ||
@@ -425,6 +427,7 @@ router.post('/resend-verification', waitlistProtection_1.waitlistProtectionMiddl
  */
 router.get('/waitlist/metrics', jwt_1.authenticateJWT, (0, jwt_1.authorizeRoles)('ADMIN'), async (_req, res) => {
     try {
+        await (0, contactSchema_1.ensureContactRequestSchema)();
         const memorySnapshot = waitlistLogger_1.waitlistMetrics.getSnapshot();
         const [totalCount, verifiedCount, pendingCount] = await Promise.all([
             prisma_1.default.contactRequest.count({
@@ -653,15 +656,45 @@ router.get('/general', jwt_1.authenticateJWT, (0, jwt_1.authorizeRoles)('ADMIN')
                 whereClause = { status: statusFilter };
             }
         }
-        const [contacts, total] = await Promise.all([
-            prisma_1.default.contactRequest.findMany({
-                where: whereClause,
-                orderBy: { createdAt: 'desc' },
-                skip,
-                take: limit,
-            }),
-            prisma_1.default.contactRequest.count({ where: whereClause }),
-        ]);
+        await (0, contactSchema_1.ensureContactRequestSchema)();
+        let contacts = [];
+        let total = 0;
+        try {
+            [contacts, total] = await Promise.all([
+                prisma_1.default.contactRequest.findMany({
+                    where: whereClause,
+                    orderBy: { createdAt: 'desc' },
+                    skip,
+                    take: limit,
+                }),
+                prisma_1.default.contactRequest.count({ where: whereClause }),
+            ]);
+        }
+        catch (prismaQueryError) {
+            console.warn('Prisma findMany query failed in GET /contacts/general, using raw SQL query fallback:', prismaQueryError?.message);
+            let sqlWhere = 'WHERE 1=1';
+            if (type === 'newsletter') {
+                sqlWhere += ` AND ("name" IN ('Newsletter Subscriber', 'Newsletter Waitlist') OR "subject" ILIKE '%waitlist%' OR "subject" ILIKE '%newsletter%')`;
+            }
+            else if (type === 'inquiries') {
+                sqlWhere += ` AND ("name" NOT IN ('Newsletter Subscriber', 'Newsletter Waitlist') AND ("subject" IS NULL OR ("subject" NOT ILIKE '%waitlist%' AND "subject" NOT ILIKE '%newsletter%')))`;
+            }
+            const rawRows = await prisma_1.default.$queryRawUnsafe(`
+          SELECT "id", "name", "email", "subject", "message", "createdAt"
+          FROM "ContactRequest"
+          ${sqlWhere}
+          ORDER BY "createdAt" DESC
+          LIMIT ${limit} OFFSET ${skip}
+        `);
+            const countRes = await prisma_1.default.$queryRawUnsafe(`
+          SELECT COUNT(*)::int as count FROM "ContactRequest" ${sqlWhere}
+        `);
+            contacts = rawRows.map((r) => ({
+                ...r,
+                status: 'VERIFIED',
+            }));
+            total = countRes[0]?.count || contacts.length;
+        }
         res.status(200).json({ contacts, total, page, limit });
     }
     catch (error) {
@@ -823,57 +856,117 @@ router.post('/general/batch-delete', jwt_1.authenticateJWT, (0, jwt_1.authorizeR
 });
 router.post('/general/newsletter/archive-fake-bots', jwt_1.authenticateJWT, (0, jwt_1.authorizeRoles)('ADMIN'), async (_req, res) => {
     try {
-        const records = await prisma_1.default.contactRequest.findMany({
-            where: {
-                OR: [
-                    { name: { in: ['Newsletter Subscriber', 'Newsletter Waitlist'] } },
-                    { subject: { contains: 'waitlist', mode: 'insensitive' } },
-                    { subject: { contains: 'newsletter', mode: 'insensitive' } },
-                ],
-            },
-        });
+        await (0, contactSchema_1.ensureContactRequestSchema)();
+        let records = [];
+        try {
+            records = await prisma_1.default.contactRequest.findMany({
+                where: {
+                    OR: [
+                        { name: { in: ['Newsletter Subscriber', 'Newsletter Waitlist'] } },
+                        { subject: { contains: 'waitlist', mode: 'insensitive' } },
+                        { subject: { contains: 'newsletter', mode: 'insensitive' } },
+                    ],
+                },
+                orderBy: { createdAt: 'asc' },
+            });
+        }
+        catch (e) {
+            records = await prisma_1.default.$queryRawUnsafe(`
+          SELECT * FROM "ContactRequest"
+          WHERE "name" IN ('Newsletter Subscriber', 'Newsletter Waitlist')
+             OR "subject" ILIKE '%waitlist%'
+             OR "subject" ILIKE '%newsletter%'
+          ORDER BY "createdAt" ASC
+        `);
+        }
         const counts = new Map();
         for (const r of records) {
-            const norm = (r.normalizedEmail || r.email).trim().toLowerCase();
+            const norm = (r.normalizedEmail || r.email || '').trim().toLowerCase();
             counts.set(norm, (counts.get(norm) || 0) + 1);
         }
         const fakeIds = [];
         const fakeRecordsToArchive = [];
-        let realCount = 0;
+        const seenRealEmails = new Set();
+        const realUpdates = [];
         for (const r of records) {
-            const norm = (r.normalizedEmail || r.email).trim().toLowerCase();
+            const norm = (r.normalizedEmail || r.email || '').trim().toLowerCase();
             const classification = (0, subscriberClassifier_1.classifySubscriber)(r.email, counts.get(norm) || 1);
             if (classification.isFake) {
                 fakeIds.push(r.id);
                 fakeRecordsToArchive.push({
                     originalId: r.id,
-                    name: r.name,
+                    name: r.name || 'Newsletter Subscriber',
                     email: r.email,
                     normalizedEmail: norm,
-                    subject: r.subject,
-                    message: r.message,
+                    subject: r.subject || 'Waitlist: Human Counselling for All Students',
+                    message: r.message || '',
                     classificationReasons: classification.reasons.join('; '),
                     botScore: classification.score,
-                    originalCreatedAt: r.createdAt,
+                    originalCreatedAt: r.createdAt ? new Date(r.createdAt) : new Date(),
                 });
             }
             else {
-                realCount++;
+                // Real subscriber: keep first (earliest) submission, archive subsequent duplicate submissions
+                if (seenRealEmails.has(norm)) {
+                    fakeIds.push(r.id);
+                    fakeRecordsToArchive.push({
+                        originalId: r.id,
+                        name: r.name || 'Newsletter Subscriber',
+                        email: r.email,
+                        normalizedEmail: norm,
+                        subject: r.subject || 'Waitlist: Human Counselling for All Students',
+                        message: r.message || '',
+                        classificationReasons: 'Duplicate submission consolidated',
+                        botScore: 0,
+                        originalCreatedAt: r.createdAt ? new Date(r.createdAt) : new Date(),
+                    });
+                }
+                else {
+                    seenRealEmails.add(norm);
+                    const campaign = (r.subject || 'Waitlist: Human Counselling for All Students').trim().toLowerCase();
+                    const subKey = `${norm}::${campaign}`;
+                    realUpdates.push({ id: r.id, subscriptionKey: subKey });
+                }
             }
         }
         if (fakeRecordsToArchive.length > 0) {
-            await prisma_1.default.archivedFakeContactRequest.createMany({
-                data: fakeRecordsToArchive,
-            });
-            await prisma_1.default.contactRequest.deleteMany({
-                where: { id: { in: fakeIds } },
+            const chunkSize = 100;
+            for (let i = 0; i < fakeRecordsToArchive.length; i += chunkSize) {
+                const chunk = fakeRecordsToArchive.slice(i, i + chunkSize);
+                await prisma_1.default.archivedFakeContactRequest.createMany({
+                    data: chunk,
+                });
+            }
+            for (let i = 0; i < fakeIds.length; i += chunkSize) {
+                const chunk = fakeIds.slice(i, i + chunkSize);
+                await prisma_1.default.contactRequest.deleteMany({
+                    where: { id: { in: chunk } },
+                });
+            }
+        }
+        for (const u of realUpdates) {
+            await prisma_1.default.contactRequest.update({
+                where: { id: u.id },
+                data: {
+                    subscriptionKey: u.subscriptionKey,
+                    status: 'VERIFIED',
+                },
             });
         }
+        try {
+            await prisma_1.default.$executeRawUnsafe(`
+          CREATE UNIQUE INDEX IF NOT EXISTS "ContactRequest_subscriptionKey_key" ON "ContactRequest"("subscriptionKey");
+        `);
+        }
+        catch (idxErr) {
+            console.warn('Could not create unique index on subscriptionKey:', idxErr);
+        }
+        const retainedRealCount = seenRealEmails.size;
         res.status(200).json({
             success: true,
             archivedCount: fakeIds.length,
-            retainedRealCount: realCount,
-            message: `Successfully quarantined ${fakeIds.length} bot submissions. Preserved ${realCount} real subscribers.`,
+            retainedRealCount,
+            message: `Successfully quarantined ${fakeIds.length} bot submissions. Preserved ${retainedRealCount} real subscribers.`,
         });
     }
     catch (error) {
@@ -883,60 +976,117 @@ router.post('/general/newsletter/archive-fake-bots', jwt_1.authenticateJWT, (0, 
 });
 router.delete('/general/newsletter/all', jwt_1.authenticateJWT, (0, jwt_1.authorizeRoles)('ADMIN'), async (_req, res) => {
     try {
-        // Safe guard: NEVER delete all newsletter subscribers indiscriminately.
-        // Filter out fake ones and archive them, keeping real subscribers intact.
-        const records = await prisma_1.default.contactRequest.findMany({
-            where: {
-                OR: [
-                    { name: { in: ['Newsletter Subscriber', 'Newsletter Waitlist'] } },
-                    { subject: { contains: 'waitlist', mode: 'insensitive' } },
-                    { subject: { contains: 'newsletter', mode: 'insensitive' } },
-                ],
-            },
-        });
+        await (0, contactSchema_1.ensureContactRequestSchema)();
+        let records = [];
+        try {
+            records = await prisma_1.default.contactRequest.findMany({
+                where: {
+                    OR: [
+                        { name: { in: ['Newsletter Subscriber', 'Newsletter Waitlist'] } },
+                        { subject: { contains: 'waitlist', mode: 'insensitive' } },
+                        { subject: { contains: 'newsletter', mode: 'insensitive' } },
+                    ],
+                },
+                orderBy: { createdAt: 'asc' },
+            });
+        }
+        catch (e) {
+            records = await prisma_1.default.$queryRawUnsafe(`
+          SELECT * FROM "ContactRequest"
+          WHERE "name" IN ('Newsletter Subscriber', 'Newsletter Waitlist')
+             OR "subject" ILIKE '%waitlist%'
+             OR "subject" ILIKE '%newsletter%'
+          ORDER BY "createdAt" ASC
+        `);
+        }
         const counts = new Map();
         for (const r of records) {
-            const norm = (r.normalizedEmail || r.email).trim().toLowerCase();
+            const norm = (r.normalizedEmail || r.email || '').trim().toLowerCase();
             counts.set(norm, (counts.get(norm) || 0) + 1);
         }
         const fakeIds = [];
         const fakeRecordsToArchive = [];
-        let realCount = 0;
+        const seenRealEmails = new Set();
+        const realUpdates = [];
         for (const r of records) {
-            const norm = (r.normalizedEmail || r.email).trim().toLowerCase();
+            const norm = (r.normalizedEmail || r.email || '').trim().toLowerCase();
             const classification = (0, subscriberClassifier_1.classifySubscriber)(r.email, counts.get(norm) || 1);
             if (classification.isFake) {
                 fakeIds.push(r.id);
                 fakeRecordsToArchive.push({
                     originalId: r.id,
-                    name: r.name,
+                    name: r.name || 'Newsletter Subscriber',
                     email: r.email,
                     normalizedEmail: norm,
-                    subject: r.subject,
-                    message: r.message,
+                    subject: r.subject || 'Waitlist: Human Counselling for All Students',
+                    message: r.message || '',
                     classificationReasons: classification.reasons.join('; '),
                     botScore: classification.score,
-                    originalCreatedAt: r.createdAt,
+                    originalCreatedAt: r.createdAt ? new Date(r.createdAt) : new Date(),
                 });
             }
             else {
-                realCount++;
+                if (seenRealEmails.has(norm)) {
+                    fakeIds.push(r.id);
+                    fakeRecordsToArchive.push({
+                        originalId: r.id,
+                        name: r.name || 'Newsletter Subscriber',
+                        email: r.email,
+                        normalizedEmail: norm,
+                        subject: r.subject || 'Waitlist: Human Counselling for All Students',
+                        message: r.message || '',
+                        classificationReasons: 'Duplicate submission consolidated',
+                        botScore: 0,
+                        originalCreatedAt: r.createdAt ? new Date(r.createdAt) : new Date(),
+                    });
+                }
+                else {
+                    seenRealEmails.add(norm);
+                    const campaign = (r.subject || 'Waitlist: Human Counselling for All Students').trim().toLowerCase();
+                    const subKey = `${norm}::${campaign}`;
+                    realUpdates.push({ id: r.id, subscriptionKey: subKey });
+                }
             }
         }
         if (fakeRecordsToArchive.length > 0) {
-            await prisma_1.default.archivedFakeContactRequest.createMany({
-                data: fakeRecordsToArchive,
-            });
-            await prisma_1.default.contactRequest.deleteMany({
-                where: { id: { in: fakeIds } },
+            const chunkSize = 100;
+            for (let i = 0; i < fakeRecordsToArchive.length; i += chunkSize) {
+                const chunk = fakeRecordsToArchive.slice(i, i + chunkSize);
+                await prisma_1.default.archivedFakeContactRequest.createMany({
+                    data: chunk,
+                });
+            }
+            for (let i = 0; i < fakeIds.length; i += chunkSize) {
+                const chunk = fakeIds.slice(i, i + chunkSize);
+                await prisma_1.default.contactRequest.deleteMany({
+                    where: { id: { in: chunk } },
+                });
+            }
+        }
+        for (const u of realUpdates) {
+            await prisma_1.default.contactRequest.update({
+                where: { id: u.id },
+                data: {
+                    subscriptionKey: u.subscriptionKey,
+                    status: 'VERIFIED',
+                },
             });
         }
+        try {
+            await prisma_1.default.$executeRawUnsafe(`
+          CREATE UNIQUE INDEX IF NOT EXISTS "ContactRequest_subscriptionKey_key" ON "ContactRequest"("subscriptionKey");
+        `);
+        }
+        catch (idxErr) {
+            console.warn('Could not create unique index on subscriptionKey:', idxErr);
+        }
+        const retainedRealCount = seenRealEmails.size;
         res.status(200).json({
             success: true,
             count: fakeIds.length,
             archivedCount: fakeIds.length,
-            retainedRealCount: realCount,
-            message: `Successfully quarantined ${fakeIds.length} bot submissions. Preserved ${realCount} real subscribers.`,
+            retainedRealCount,
+            message: `Successfully quarantined ${fakeIds.length} bot submissions. Preserved ${retainedRealCount} real subscribers.`,
         });
     }
     catch (error) {

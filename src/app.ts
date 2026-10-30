@@ -15,6 +15,7 @@ import v1AdminRouter from './routes/v1/admin';
 import v1CounselorsRouter from './routes/v1/counselors';
 import v1StudentsRouter from './routes/v1/students';
 import { startReminderScheduler } from './utils/reminderService';
+import { ensureContactRequestSchema } from './services/contactSchema';
 
 const app = express();
 
@@ -206,6 +207,11 @@ app.use((err: any, _req: express.Request, res: express.Response, _next: express.
     success: false,
     error: { code: body.code, message: body.message },
   });
+});
+
+// Ensure contact and waitlist database schema is initialized and backward-compatible
+ensureContactRequestSchema().catch((err) => {
+  console.warn('Initial ensureContactRequestSchema check warning:', err?.message || err);
 });
 
 // Start background automated session reminder scheduler

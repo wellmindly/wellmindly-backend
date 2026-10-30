@@ -20,6 +20,7 @@ const admin_2 = __importDefault(require("./routes/v1/admin"));
 const counselors_1 = __importDefault(require("./routes/v1/counselors"));
 const students_2 = __importDefault(require("./routes/v1/students"));
 const reminderService_1 = require("./utils/reminderService");
+const contactSchema_1 = require("./services/contactSchema");
 const app = (0, express_1.default)();
 // Trust reverse proxies (CloudFront / ALB / Nginx) so req.ip and rate limiters
 // inspect X-Forwarded-For rather than treating all production traffic as 127.0.0.1
@@ -196,6 +197,10 @@ app.use((err, _req, res, _next) => {
         success: false,
         error: { code: body.code, message: body.message },
     });
+});
+// Ensure contact and waitlist database schema is initialized and backward-compatible
+(0, contactSchema_1.ensureContactRequestSchema)().catch((err) => {
+    console.warn('Initial ensureContactRequestSchema check warning:', err?.message || err);
 });
 // Start background automated session reminder scheduler
 if (env_1.env.ENABLE_REMINDER_SCHEDULER) {

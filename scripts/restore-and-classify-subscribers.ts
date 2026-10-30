@@ -46,6 +46,79 @@ function parseDateSafely(dateStr: string): Date {
   return new Date();
 }
 
+/**
+ * Ensures the PostgreSQL database has all required columns, archive table,
+ * and unique indexes before running data restoration.
+ */
+async function autoMigrateDatabase() {
+  console.log('\n[1/3] Checking database connectivity and schema...');
+  try {
+    await prisma.$queryRawUnsafe('SELECT 1');
+  } catch (err: any) {
+    if (err.code === 'ECONNREFUSED' || err.message?.includes('ECONNREFUSED')) {
+      throw new Error(
+        'PostgreSQL connection refused at localhost:5432. Please ensure your database is running (e.g. "docker-compose up -d db").'
+      );
+    }
+    throw err;
+  }
+
+  console.log('Ensuring required database columns and tables exist...');
+
+  // 1. Add columns to ContactRequest if missing
+  await prisma.$executeRawUnsafe(`
+    ALTER TABLE "ContactRequest" ADD COLUMN IF NOT EXISTS "normalizedEmail" TEXT;
+    ALTER TABLE "ContactRequest" ADD COLUMN IF NOT EXISTS "status" TEXT NOT NULL DEFAULT 'VERIFIED';
+    ALTER TABLE "ContactRequest" ADD COLUMN IF NOT EXISTS "verifiedAt" TIMESTAMP(3);
+    ALTER TABLE "ContactRequest" ADD COLUMN IF NOT EXISTS "verificationTokenHash" TEXT;
+    ALTER TABLE "ContactRequest" ADD COLUMN IF NOT EXISTS "verificationExpiresAt" TIMESTAMP(3);
+    ALTER TABLE "ContactRequest" ADD COLUMN IF NOT EXISTS "subscriptionKey" TEXT;
+  `);
+
+  // 2. Create ArchivedFakeContactRequest table if missing
+  await prisma.$executeRawUnsafe(`
+    CREATE TABLE IF NOT EXISTS "ArchivedFakeContactRequest" (
+      "id" TEXT PRIMARY KEY,
+      "originalId" TEXT,
+      "name" TEXT NOT NULL,
+      "email" TEXT NOT NULL,
+      "normalizedEmail" TEXT,
+      "subject" TEXT,
+      "message" TEXT NOT NULL,
+      "classificationReasons" TEXT,
+      "botScore" INTEGER NOT NULL DEFAULT 100,
+      "originalCreatedAt" TIMESTAMP(3),
+      "archivedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS "ArchivedFakeContactRequest_normalizedEmail_idx" ON "ArchivedFakeContactRequest"("normalizedEmail");
+    CREATE INDEX IF NOT EXISTS "ArchivedFakeContactRequest_archivedAt_idx" ON "ArchivedFakeContactRequest"("archivedAt");
+  `);
+
+  // 3. Ensure normalizedEmail and subscriptionKey are filled for existing rows
+  await prisma.$executeRawUnsafe(`
+    UPDATE "ContactRequest"
+    SET "normalizedEmail" = LOWER(TRIM("email"))
+    WHERE "normalizedEmail" IS NULL;
+
+    UPDATE "ContactRequest"
+    SET "subscriptionKey" = "normalizedEmail" || '::' || LOWER(TRIM(COALESCE("subject", 'waitlist')))
+    WHERE "subscriptionKey" IS NULL AND ("name" IN ('Newsletter Subscriber', 'Newsletter Waitlist') OR "subject" ILIKE '%waitlist%' OR "subject" ILIKE '%newsletter%');
+  `);
+
+  // 4. Safely add indexes if not existing
+  try {
+    await prisma.$executeRawUnsafe(`
+      CREATE UNIQUE INDEX IF NOT EXISTS "ContactRequest_subscriptionKey_key" ON "ContactRequest"("subscriptionKey");
+      CREATE INDEX IF NOT EXISTS "ContactRequest_normalizedEmail_idx" ON "ContactRequest"("normalizedEmail");
+      CREATE INDEX IF NOT EXISTS "ContactRequest_status_idx" ON "ContactRequest"("status");
+    `);
+  } catch (idxErr: any) {
+    console.warn('Notice: unique index creation deferred (may require duplicate resolution first):', idxErr.message);
+  }
+
+  console.log('✓ Database schema verified.');
+}
+
 export async function processSnapshotAndClassify(csvPath: string, applyChanges: boolean = false) {
   if (!fs.existsSync(csvPath)) {
     throw new Error(`CSV file not found at path: ${csvPath}`);
@@ -178,7 +251,7 @@ export async function processSnapshotAndClassify(csvPath: string, applyChanges: 
       verifiedAt: primaryDate,
     });
 
-    // If there were duplicates of this real subscriber, archive the subsequent duplicate attempts
+    // Archive repeat submission instances with audit reasons
     for (let i = 1; i < records.length; i++) {
       const dup = records[i];
       realDuplicateRecordsToArchive.push({
@@ -247,66 +320,103 @@ export async function processSnapshotAndClassify(csvPath: string, applyChanges: 
     };
   }
 
-  console.log(`\nApplying changes to database...`);
+  // 1. Auto-migrate database schema first
+  await autoMigrateDatabase();
 
-  // Write fake records to ArchivedFakeContactRequest
+  console.log(`\n[2/3] Writing quarantined records to ArchivedFakeContactRequest...`);
   let fakeInserted = 0;
   for (const f of allArchived) {
     try {
-      await prisma.archivedFakeContactRequest.create({
-        data: {
-          originalId: f.originalId,
-          name: f.name,
-          email: f.email,
-          normalizedEmail: f.normalizedEmail,
-          subject: f.subject,
-          message: f.message,
-          classificationReasons: f.classificationReasons,
-          botScore: f.botScore,
-          originalCreatedAt: f.originalCreatedAt,
-        },
-      });
+      const recordId = f.originalId || `arch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      await prisma.$executeRawUnsafe(
+        `INSERT INTO "ArchivedFakeContactRequest" 
+          ("id", "originalId", "name", "email", "normalizedEmail", "subject", "message", "classificationReasons", "botScore", "originalCreatedAt", "archivedAt")
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CURRENT_TIMESTAMP)
+         ON CONFLICT ("id") DO UPDATE SET
+          "classificationReasons" = EXCLUDED."classificationReasons",
+          "botScore" = EXCLUDED."botScore";`,
+        recordId,
+        f.originalId,
+        f.name,
+        f.email,
+        f.normalizedEmail,
+        f.subject,
+        f.message,
+        f.classificationReasons,
+        f.botScore,
+        f.originalCreatedAt
+      );
       fakeInserted++;
     } catch (e: any) {
-      // If table doesn't exist yet, we catch or continue
-      console.warn(`Could not insert archived fake record:`, e.message);
+      console.warn(`Could not insert archived fake record (${f.email}):`, e.message);
     }
   }
 
-  // Restore/Insert Real unique subscribers into ContactRequest
+  console.log(`✓ Archived ${fakeInserted} fake and duplicate submissions.`);
+
+  console.log(`\n[3/3] Restoring and updating real subscribers in ContactRequest...`);
   let realInserted = 0;
   let realUpdated = 0;
 
   for (const s of uniqueRealSubscribers) {
     try {
-      await prisma.contactRequest.upsert({
-        where: { subscriptionKey: s.subscriptionKey },
-        create: {
-          id: s.id,
-          name: s.name,
-          email: s.email,
-          normalizedEmail: s.normalizedEmail,
-          subject: s.subject,
-          message: s.message,
-          status: s.status,
-          subscriptionKey: s.subscriptionKey,
-          createdAt: s.createdAt,
-          verifiedAt: s.verifiedAt,
-        },
-        update: {
-          status: 'VERIFIED',
-          verifiedAt: s.verifiedAt,
+      // Find if record already exists by subscriptionKey, id, or normalizedEmail
+      const existing = await prisma.contactRequest.findFirst({
+        where: {
+          OR: [
+            { subscriptionKey: s.subscriptionKey },
+            { id: s.id },
+            { normalizedEmail: s.normalizedEmail },
+          ],
         },
       });
-      realInserted++;
+
+      if (existing) {
+        // Update existing row
+        await prisma.contactRequest.update({
+          where: { id: existing.id },
+          data: {
+            name: s.name,
+            email: s.email,
+            normalizedEmail: s.normalizedEmail,
+            subject: s.subject,
+            message: s.message,
+            status: 'VERIFIED',
+            subscriptionKey: s.subscriptionKey,
+            verifiedAt: s.verifiedAt,
+          },
+        });
+        realUpdated++;
+      } else {
+        // Insert new row
+        await prisma.contactRequest.create({
+          data: {
+            id: s.id,
+            name: s.name,
+            email: s.email,
+            normalizedEmail: s.normalizedEmail,
+            subject: s.subject,
+            message: s.message,
+            status: s.status,
+            subscriptionKey: s.subscriptionKey,
+            createdAt: s.createdAt,
+            verifiedAt: s.verifiedAt,
+          },
+        });
+        realInserted++;
+      }
     } catch (e: any) {
       console.warn(`Error restoring real subscriber ${s.email}:`, e.message);
     }
   }
 
-  console.log(`\n[APPLY COMPLETE]`);
+  console.log(`\n========================================================`);
+  console.log(`  [APPLY COMPLETE]`);
+  console.log(`========================================================`);
   console.log(`- Archived fake & duplicate records saved: ${fakeInserted}`);
-  console.log(`- Real unique subscribers active in ContactRequest: ${realInserted}`);
+  console.log(`- New real subscribers inserted: ${realInserted}`);
+  console.log(`- Existing subscribers updated with verified key: ${realUpdated}`);
+  console.log(`- Total active real subscribers in ContactRequest: ${realInserted + realUpdated}`);
 
   return {
     total: rawRows.length,
@@ -325,7 +435,8 @@ if (require.main === module) {
 
   processSnapshotAndClassify(csvArg, apply)
     .catch((err) => {
-      console.error('Fatal error during classification:', err);
+      console.error('\nFatal error during classification / restoration:');
+      console.error(err.message || err);
       process.exit(1);
     })
     .finally(async () => {
