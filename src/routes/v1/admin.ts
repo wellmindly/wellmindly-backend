@@ -9,6 +9,7 @@ import { queueEmail } from '../../utils/emailQueue';
 import { logAuditEvent } from '../../utils/auditLogger';
 import { escapeHtml } from '../../utils/escapeHtml';
 import { env } from '../../config/env';
+import { normalizeAvatarUrl } from './counselors';
 
 const router = Router();
 
@@ -295,7 +296,12 @@ router.get('/counselors', async (req: AuthenticatedRequest, res: Response) => {
     }),
   ]);
 
-  sendSuccess(res, counselors, 200, { page, limit, total, totalPages: Math.ceil(total / limit) });
+  const formattedCounselors = counselors.map((c) => ({
+    ...c,
+    avatarUrl: normalizeAvatarUrl(c.avatarUrl),
+  }));
+
+  sendSuccess(res, formattedCounselors, 200, { page, limit, total, totalPages: Math.ceil(total / limit) });
 });
 
 /**

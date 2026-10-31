@@ -16,6 +16,7 @@ import {
 import { logWaitlistEvent, waitlistMetrics, maskEmail, generateRequestId } from '../utils/waitlistLogger';
 import { classifySubscriber } from '../utils/subscriberClassifier';
 import { ensureContactRequestSchema } from '../services/contactSchema';
+import { normalizeAvatarUrl } from './v1/counselors';
 
 const router = Router();
 
@@ -655,7 +656,7 @@ router.get('/coaches', async (_req: Request, res: Response) => {
         specializations: c.specializations,
         specs: c.specializations.slice(0, 3),
         bio: c.bio,
-        avatarUrl: c.avatarUrl,
+        avatarUrl: normalizeAvatarUrl(c.avatarUrl),
         init,
         rating: averageRating,
         totalReviews,

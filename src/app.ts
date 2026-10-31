@@ -23,8 +23,12 @@ const app = express();
 // inspect X-Forwarded-For rather than treating all production traffic as 127.0.0.1
 app.set('trust proxy', true);
 
-// Secure security headers
-app.use(helmet());
+// Secure security headers - allow cross-origin resource embedding for public assets/avatars
+app.use(
+  helmet({
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
+  })
+);
 
 // Configure secure CORS policy checks
 const allowedOrigins = env.ALLOWED_ORIGINS.split(',');

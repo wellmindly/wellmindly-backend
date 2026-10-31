@@ -43,17 +43,24 @@ export async function uploadToS3(
   const timestamp = Date.now();
   const key = `${folder}/${timestamp}-${safeName}`;
 
-  // Always save locally to uploads/ as reliable local storage & fallback
-  try {
-    const localDir = path.join(process.cwd(), 'uploads', folder);
-    if (!fs.existsSync(localDir)) {
-      fs.mkdirSync(localDir, { recursive: true });
+  // Always save locally to uploads/ as reliable local storage & fallback across working directories
+  const candidateDirs = [
+    path.join(process.cwd(), 'uploads', folder),
+    path.join(process.cwd(), 'backend', 'uploads', folder),
+    path.resolve(__dirname, '../../../uploads', folder),
+    path.resolve(__dirname, '../../uploads', folder),
+  ];
+
+  for (const localDir of candidateDirs) {
+    try {
+      if (!fs.existsSync(localDir)) {
+        fs.mkdirSync(localDir, { recursive: true });
+      }
+      const localFilePath = path.join(localDir, `${timestamp}-${safeName}`);
+      fs.writeFileSync(localFilePath, buffer);
+    } catch {
+      // Ignore if one candidate path is not accessible
     }
-    const localFilePath = path.join(localDir, `${timestamp}-${safeName}`);
-    fs.writeFileSync(localFilePath, buffer);
-    console.log(`✅ Saved local asset fallback to: ${localFilePath}`);
-  } catch (localErr) {
-    console.warn('⚠️ Could not save local asset copy:', localErr);
   }
 
   // Use the public proxy endpoint so direct S3 private permissions never block browsers

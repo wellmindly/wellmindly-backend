@@ -25,8 +25,10 @@ const app = (0, express_1.default)();
 // Trust reverse proxies (CloudFront / ALB / Nginx) so req.ip and rate limiters
 // inspect X-Forwarded-For rather than treating all production traffic as 127.0.0.1
 app.set('trust proxy', true);
-// Secure security headers
-app.use((0, helmet_1.default)());
+// Secure security headers - allow cross-origin resource embedding for public assets/avatars
+app.use((0, helmet_1.default)({
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
+}));
 // Configure secure CORS policy checks
 const allowedOrigins = env_1.env.ALLOWED_ORIGINS.split(',');
 const mobileOrigins = [

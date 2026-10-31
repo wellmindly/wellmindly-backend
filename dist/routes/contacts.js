@@ -16,6 +16,7 @@ const waitlistProtection_1 = require("../middleware/waitlistProtection");
 const waitlistLogger_1 = require("../utils/waitlistLogger");
 const subscriberClassifier_1 = require("../utils/subscriberClassifier");
 const contactSchema_1 = require("../services/contactSchema");
+const counselors_1 = require("./v1/counselors");
 const router = (0, express_1.Router)();
 const generalContactSchema = zod_1.z.object({
     name: zod_1.z.string().min(1, 'Name is required').trim(),
@@ -599,7 +600,7 @@ router.get('/coaches', async (_req, res) => {
                 specializations: c.specializations,
                 specs: c.specializations.slice(0, 3),
                 bio: c.bio,
-                avatarUrl: c.avatarUrl,
+                avatarUrl: (0, counselors_1.normalizeAvatarUrl)(c.avatarUrl),
                 init,
                 rating: averageRating,
                 totalReviews,

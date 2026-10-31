@@ -14,6 +14,7 @@ const emailQueue_1 = require("../../utils/emailQueue");
 const escapeHtml_1 = require("../../utils/escapeHtml");
 const accessControl_1 = require("../../services/accessControl");
 const jitsi_1 = require("../../utils/jitsi");
+const counselors_1 = require("./counselors");
 const router = (0, express_1.Router)();
 // Protect student endpoints with JWT
 router.use(rbac_1.authenticateJWT, (0, rbac_1.requireRoles)(['STUDENT', 'ADMIN', 'SUPER_ADMIN']));
@@ -45,7 +46,7 @@ router.get('/counselors', async (req, res) => {
             credentials: c.credentials,
             specializations: c.specializations,
             bio: c.bio,
-            avatarUrl: c.avatarUrl,
+            avatarUrl: (0, counselors_1.normalizeAvatarUrl)(c.avatarUrl),
             averageRating: avgRating,
             totalReviews: ratings.length,
         };

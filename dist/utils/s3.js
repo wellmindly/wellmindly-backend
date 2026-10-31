@@ -35,18 +35,24 @@ async function uploadToS3(buffer, originalName, mimeType, folder = 'avatars') {
     const safeName = (originalName || `avatar_${Date.now()}.png`).replace(/[^a-zA-Z0-9._-]/g, '_');
     const timestamp = Date.now();
     const key = `${folder}/${timestamp}-${safeName}`;
-    // Always save locally to uploads/ as reliable local storage & fallback
-    try {
-        const localDir = path_1.default.join(process.cwd(), 'uploads', folder);
-        if (!fs_1.default.existsSync(localDir)) {
-            fs_1.default.mkdirSync(localDir, { recursive: true });
+    // Always save locally to uploads/ as reliable local storage & fallback across working directories
+    const candidateDirs = [
+        path_1.default.join(process.cwd(), 'uploads', folder),
+        path_1.default.join(process.cwd(), 'backend', 'uploads', folder),
+        path_1.default.resolve(__dirname, '../../../uploads', folder),
+        path_1.default.resolve(__dirname, '../../uploads', folder),
+    ];
+    for (const localDir of candidateDirs) {
+        try {
+            if (!fs_1.default.existsSync(localDir)) {
+                fs_1.default.mkdirSync(localDir, { recursive: true });
+            }
+            const localFilePath = path_1.default.join(localDir, `${timestamp}-${safeName}`);
+            fs_1.default.writeFileSync(localFilePath, buffer);
         }
-        const localFilePath = path_1.default.join(localDir, `${timestamp}-${safeName}`);
-        fs_1.default.writeFileSync(localFilePath, buffer);
-        console.log(`✅ Saved local asset fallback to: ${localFilePath}`);
-    }
-    catch (localErr) {
-        console.warn('⚠️ Could not save local asset copy:', localErr);
+        catch {
+            // Ignore if one candidate path is not accessible
+        }
     }
     // Use the public proxy endpoint so direct S3 private permissions never block browsers
     const proxyUrl = `/api/v1/counselors/assets/${key}`;

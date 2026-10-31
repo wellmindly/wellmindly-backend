@@ -24,9 +24,14 @@ function normalizeAvatarUrl(url) {
     if (!url)
         return null;
     if (url.includes('.amazonaws.com/')) {
-        const key = url.split('.amazonaws.com/')[1];
-        if (key)
+        let key = url.split('.amazonaws.com/')[1];
+        if (key) {
+            key = key.split('?')[0];
+            if (key.startsWith('wellmindly-assets/')) {
+                key = key.replace(/^wellmindly-assets\//, '');
+            }
             return `/api/v1/counselors/assets/${key}`;
+        }
     }
     return url;
 }
@@ -55,11 +60,51 @@ router.post('/verify-invite', async (req, res) => {
     });
 });
 /**
+ * POST /api/v1/counselors/setup-upload
+ * Upload avatar during invitation onboarding using the invitation token
+ */
+router.post('/setup-upload', async (req, res) => {
+    try {
+        const { token, fileName, mimeType, base64Data, folder } = req.body || {};
+        if (!token) {
+            (0, response_1.sendError)(res, 'INVALID_INPUT', 'Invitation token is required', 400);
+            return;
+        }
+        const invitation = await prisma_1.default.counselorInvitation.findUnique({
+            where: { token },
+        });
+        if (!invitation || invitation.used || invitation.expiresAt < new Date()) {
+            (0, response_1.sendError)(res, 'INVALID_INVITE', 'Invitation link is invalid or expired', 400);
+            return;
+        }
+        if (!base64Data) {
+            (0, response_1.sendError)(res, 'INVALID_INPUT', 'base64Data is required', 400);
+            return;
+        }
+        const cleanBase64 = base64Data.includes('base64,')
+            ? base64Data.split('base64,')[1]
+            : base64Data;
+        const buffer = Buffer.from(cleanBase64, 'base64');
+        const name = fileName || `avatar_${Date.now()}.png`;
+        const type = mimeType || 'image/png';
+        const result = await (0, s3_1.uploadToS3)(buffer, name, type, folder || 'avatars');
+        (0, response_1.sendSuccess)(res, {
+            message: 'File uploaded successfully',
+            url: result.url,
+            key: result.key,
+        });
+    }
+    catch (error) {
+        console.error('Error uploading setup file:', error);
+        (0, response_1.sendError)(res, 'UPLOAD_FAILED', 'Failed to upload file', 500);
+    }
+});
+/**
  * POST /api/v1/counselors/setup-profile
  * Complete password setup and create counselor account from invite token
  */
 router.post('/setup-profile', async (req, res) => {
-    const { token, password, credentials, specializations, bio, phone, timezone } = req.body;
+    const { token, password, credentials, specializations, bio, phone, timezone, avatarUrl } = req.body;
     if (!token || !password || !credentials) {
         (0, response_1.sendError)(res, 'INVALID_INPUT', 'Token, password, and credentials are required', 400);
         return;
@@ -89,6 +134,7 @@ router.post('/setup-profile', async (req, res) => {
                 specializations: specializations || ['General Wellness'],
                 bio: bio || '',
                 phone: phone || '',
+                avatarUrl: avatarUrl ? normalizeAvatarUrl(avatarUrl) : null,
                 status: 'ACTIVE',
             },
         });
@@ -331,35 +377,59 @@ router.get('/assets/:folder/:filename', async (req, res) => {
         const rawFolder = Array.isArray(req.params.folder) ? req.params.folder[0] : req.params.folder;
         const rawFilename = Array.isArray(req.params.filename) ? req.params.filename[0] : req.params.filename;
         const safeFolder = String(rawFolder || 'avatars').replace(/[^a-zA-Z0-9_-]/g, '');
-        const safeFilename = String(rawFilename || '').replace(/[^a-zA-Z0-9._-]/g, '');
-        const key = `${safeFolder}/${safeFilename}`;
+        // Support URL-encoded names, spaces converted to underscores, and raw spaces
+        const decodedFilename = decodeURIComponent(String(rawFilename || ''));
+        const safeFilename = decodedFilename.replace(/[^a-zA-Z0-9._ -]/g, '');
+        const underscoreFilename = safeFilename.replace(/\s+/g, '_');
+        const strippedFilename = safeFilename.replace(/[^a-zA-Z0-9._-]/g, '');
+        // Enable cross-origin embedding so any frontend (student, counselor, admin) can display images
+        res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        const candidateFilenames = Array.from(new Set([
+            safeFilename,
+            underscoreFilename,
+            strippedFilename,
+        ])).filter(Boolean);
         // 1. Try local disk storage first (fast, reliable, works offline and in local dev)
-        const localPath = path_1.default.join(process.cwd(), 'uploads', safeFolder, safeFilename);
-        if (fs_1.default.existsSync(localPath)) {
-            const ext = path_1.default.extname(safeFilename).toLowerCase();
-            const mimeMap = {
-                '.png': 'image/png',
-                '.jpg': 'image/jpeg',
-                '.jpeg': 'image/jpeg',
-                '.webp': 'image/webp',
-                '.gif': 'image/gif',
-                '.svg': 'image/svg+xml',
-            };
-            res.setHeader('Content-Type', mimeMap[ext] || 'image/png');
-            res.setHeader('Cache-Control', 'public, max-age=86400');
-            return fs_1.default.createReadStream(localPath).pipe(res);
+        const candidateDirs = [
+            path_1.default.join(process.cwd(), 'uploads', safeFolder),
+            path_1.default.join(process.cwd(), 'backend', 'uploads', safeFolder),
+            path_1.default.resolve(__dirname, '../../../uploads', safeFolder),
+            path_1.default.resolve(__dirname, '../../uploads', safeFolder),
+        ];
+        for (const dir of candidateDirs) {
+            for (const fname of candidateFilenames) {
+                const localPath = path_1.default.join(dir, fname);
+                if (fs_1.default.existsSync(localPath)) {
+                    const ext = path_1.default.extname(fname).toLowerCase();
+                    const mimeMap = {
+                        '.png': 'image/png',
+                        '.jpg': 'image/jpeg',
+                        '.jpeg': 'image/jpeg',
+                        '.webp': 'image/webp',
+                        '.gif': 'image/gif',
+                        '.svg': 'image/svg+xml',
+                    };
+                    res.setHeader('Content-Type', mimeMap[ext] || 'image/png');
+                    res.setHeader('Cache-Control', 'public, max-age=86400');
+                    return fs_1.default.createReadStream(localPath).pipe(res);
+                }
+            }
         }
         // 2. Fetch from AWS S3 using server-side credentials
-        const s3Obj = await (0, s3_1.getS3Object)(key);
-        if (s3Obj && s3Obj.body) {
-            res.setHeader('Content-Type', s3Obj.contentType || 'image/png');
-            res.setHeader('Cache-Control', 'public, max-age=86400'); // Cache for 24h
-            if (typeof s3Obj.body.pipe === 'function') {
-                return s3Obj.body.pipe(res);
-            }
-            else {
-                const bytes = await s3Obj.body.transformToByteArray();
-                return res.send(Buffer.from(bytes));
+        for (const fname of candidateFilenames) {
+            const key = `${safeFolder}/${fname}`;
+            const s3Obj = await (0, s3_1.getS3Object)(key);
+            if (s3Obj && s3Obj.body) {
+                res.setHeader('Content-Type', s3Obj.contentType || 'image/png');
+                res.setHeader('Cache-Control', 'public, max-age=86400'); // Cache for 24h
+                if (typeof s3Obj.body.pipe === 'function') {
+                    return s3Obj.body.pipe(res);
+                }
+                else {
+                    const bytes = await s3Obj.body.transformToByteArray();
+                    return res.send(Buffer.from(bytes));
+                }
             }
         }
         res.status(404).send('Asset not found');

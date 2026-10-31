@@ -14,6 +14,7 @@ const emailQueue_1 = require("../../utils/emailQueue");
 const auditLogger_1 = require("../../utils/auditLogger");
 const escapeHtml_1 = require("../../utils/escapeHtml");
 const env_1 = require("../../config/env");
+const counselors_1 = require("./counselors");
 const router = (0, express_1.Router)();
 /**
  * POST /api/v1/admin/maintenance/wipe-prod-data
@@ -268,7 +269,11 @@ router.get('/counselors', async (req, res) => {
             orderBy: { createdAt: 'desc' },
         }),
     ]);
-    (0, response_1.sendSuccess)(res, counselors, 200, { page, limit, total, totalPages: Math.ceil(total / limit) });
+    const formattedCounselors = counselors.map((c) => ({
+        ...c,
+        avatarUrl: (0, counselors_1.normalizeAvatarUrl)(c.avatarUrl),
+    }));
+    (0, response_1.sendSuccess)(res, formattedCounselors, 200, { page, limit, total, totalPages: Math.ceil(total / limit) });
 });
 /**
  * PUT /api/v1/admin/counselors/:id/status

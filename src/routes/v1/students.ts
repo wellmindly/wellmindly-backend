@@ -9,6 +9,7 @@ import { queueEmail } from '../../utils/emailQueue';
 import { escapeHtml } from '../../utils/escapeHtml';
 import { isStudentEligible } from '../../services/accessControl';
 import { buildJitsiMeetingLink } from '../../utils/jitsi';
+import { normalizeAvatarUrl } from './counselors';
 
 const router = Router();
 
@@ -46,7 +47,7 @@ router.get('/counselors', async (req: AuthenticatedRequest, res: Response) => {
       credentials: c.credentials,
       specializations: c.specializations,
       bio: c.bio,
-      avatarUrl: c.avatarUrl,
+      avatarUrl: normalizeAvatarUrl(c.avatarUrl),
       averageRating: avgRating,
       totalReviews: ratings.length,
     };
