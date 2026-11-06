@@ -22,11 +22,18 @@ const router = Router();
 router.post('/maintenance/wipe-prod-data', async (req: Request, res: Response) => {
   try {
     const maintenanceKey = req.headers['x-maintenance-key'];
-    const expectedKey = env.MAINTENANCE_KEY || 'wellmindly_maint_2026_secure';
+    const expectedKey = env.MAINTENANCE_KEY;
     let isAuthorized = false;
     let actorId: string | null = null;
 
-    if (maintenanceKey && (maintenanceKey === expectedKey || maintenanceKey === 'wellmindly_maint_2026_secure')) {
+    const keyMatches =
+      typeof maintenanceKey === 'string' &&
+      !!expectedKey &&
+      expectedKey.length >= 32 &&
+      maintenanceKey.length === expectedKey.length &&
+      crypto.timingSafeEqual(Buffer.from(maintenanceKey), Buffer.from(expectedKey));
+
+    if (keyMatches) {
       isAuthorized = true;
       actorId = 'MAINTENANCE_KEY';
     } else {

@@ -8,6 +8,8 @@ const envSchema = z.object({
   DATABASE_URL: z.string().url('DATABASE_URL must be a valid URL'),
   JWT_SECRET: z.string().min(1, 'JWT_SECRET is required'),
   GOOGLE_CLIENT_ID: z.string().optional(),
+  // Optional comma-separated extra OAuth client IDs accepted as ID-token audiences.
+  GOOGLE_CLIENT_IDS: z.string().optional(),
   GOOGLE_CLIENT_SECRET: z.string().optional(),
   SMTP_HOST: z.string().optional(),
   SMTP_PORT: z.coerce.number().optional(),
@@ -61,7 +63,11 @@ const envSchema = z.object({
     .url()
     .optional()
     .default('https://admin.wellmindly.com'),
-  MAINTENANCE_KEY: z.string().optional().default('wellmindly_maint_2026_secure'),
+  // No default: when unset, the maintenance-key path is disabled and only an
+  // admin JWT can call maintenance endpoints. Must be a long random secret.
+  // (Keys shorter than 32 chars are ignored by the route, not rejected here, so
+  // a weak value can never stop the server from booting.)
+  MAINTENANCE_KEY: z.string().optional(),
   // Waitlist & newsletter subscription protection configuration
   WAITLIST_RATE_LIMIT_WINDOW_MS: z.coerce.number().default(15 * 60 * 1000), // 15 mins
   WAITLIST_RATE_LIMIT_IP_MAX: z.coerce.number().default(50), // campus NAT friendly

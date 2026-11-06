@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { OAuth2Client } from 'google-auth-library';
+import { OAuth2Client, TokenPayload } from 'google-auth-library';
 import prisma from '../lib/prisma';
 import { signToken } from '../lib/jwt';
 import { env } from '../config/env';
@@ -9,6 +9,18 @@ import { isStudentEligible } from '../services/accessControl';
 
 const router = Router();
 const googleClient = new OAuth2Client(env.GOOGLE_CLIENT_ID);
+
+// Every OAuth client ID whose ID tokens we accept. Web and native (Android
+// Credential Manager) sign-in both mint tokens for the *web* client ID, so
+// GOOGLE_CLIENT_ID alone is normally enough; GOOGLE_CLIENT_IDS lets an extra
+// client (e.g. iOS) be added without a code change.
+const googleAudiences = Array.from(
+  new Set(
+    [env.GOOGLE_CLIENT_ID, ...(env.GOOGLE_CLIENT_IDS || '').split(',')]
+      .map((id) => (id || '').trim())
+      .filter(Boolean)
+  )
+);
 
 /**
  * POST /api/auth/google/callback
@@ -27,31 +39,30 @@ router.post('/google/callback', async (req: Request, res: Response) => {
       return;
     }
 
-    let ticket: any;
-    try {
-      ticket = await googleClient.verifyIdToken({
-        idToken,
-        audience: env.GOOGLE_CLIENT_ID,
-      });
-    } catch (err: any) {
-      console.error('Google ID token verification failed via SDK, attempting fallback decode:', err);
-      try {
-        const jwt = require('jsonwebtoken');
-        const decoded = jwt.decode(idToken) as any;
-        if (decoded && decoded.email && decoded.sub) {
-          ticket = { getPayload: () => decoded };
-        } else {
-          throw new Error('Invalid token payload');
-        }
-      } catch (fbErr) {
-        res.status(401).json({ error: 'Invalid or expired Google token' });
-        return;
-      }
+    if (googleAudiences.length === 0) {
+      console.error('Google sign-in rejected: GOOGLE_CLIENT_ID is not configured on the server.');
+      res.status(503).json({ error: 'Google sign-in is not configured' });
+      return;
     }
 
-    const payload = ticket.getPayload();
+    // The signature, issuer, expiry and audience must all verify. Never fall
+    // back to an unverified decode: that lets anyone mint a token for any email.
+    let payload: TokenPayload | undefined;
+    try {
+      const ticket = await googleClient.verifyIdToken({ idToken, audience: googleAudiences });
+      payload = ticket.getPayload();
+    } catch (err: any) {
+      console.warn('Google ID token verification failed:', err?.message || err);
+      res.status(401).json({ error: 'Invalid or expired Google token' });
+      return;
+    }
+
     if (!payload || !payload.email) {
       res.status(401).json({ error: 'Google token payload is missing email' });
+      return;
+    }
+    if (payload.email_verified === false) {
+      res.status(401).json({ error: 'Your Google email address is not verified' });
       return;
     }
 
