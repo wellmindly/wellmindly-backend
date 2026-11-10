@@ -56,16 +56,18 @@ describe('Counselor Password Reset API Routes', () => {
       expect(res.body.error.code).toBe('INVALID_INPUT');
     });
 
-    it('should return 404 if user is not found or not a counselor', async () => {
+    it('gives the same answer, and sends nothing, when the email is not a counselor', async () => {
+      // Answering 404 here told anyone which addresses belong to counselors.
       mockFindUnique.mockResolvedValueOnce(null);
 
       const res = await request(app)
         .post('/api/v1/counselors/forgot-password')
         .send({ email: 'unknown@wellmindly.com' });
 
-      expect(res.status).toBe(404);
-      expect(res.body.success).toBe(false);
-      expect(res.body.error.code).toBe('USER_NOT_FOUND');
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.message).toContain('If a counselor account exists');
+      expect(mockSendEmail).not.toHaveBeenCalled();
     });
 
     it('should send reset email and return success when counselor exists', async () => {
@@ -77,7 +79,7 @@ describe('Counselor Password Reset API Routes', () => {
 
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
-      expect(res.body.data.message).toContain('Password reset link has been sent');
+      expect(res.body.data.message).toContain('If a counselor account exists');
       expect(mockSendEmail).toHaveBeenCalledTimes(1);
       expect(mockSendEmail).toHaveBeenCalledWith(
         expect.objectContaining({

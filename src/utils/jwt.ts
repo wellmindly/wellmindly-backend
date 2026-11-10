@@ -55,8 +55,13 @@ export function authenticateJWT(
  *   router.delete('/admin/user/:id', authenticateJWT, authorizeRoles('ADMIN'), handler);
  */
 export function authorizeRoles(...allowedRoles: string[]) {
+  // SUPER_ADMIN is a superset of ADMIN: anywhere ADMIN is allowed, so is it.
+  // Many legacy routes list only 'ADMIN', which locked super admins out.
+  const roles = allowedRoles.includes('ADMIN') && !allowedRoles.includes('SUPER_ADMIN')
+    ? [...allowedRoles, 'SUPER_ADMIN']
+    : allowedRoles;
   return (req: Request, res: Response, next: NextFunction): void => {
-    if (!req.user || !allowedRoles.includes(req.user.role)) {
+    if (!req.user || !roles.includes(req.user.role)) {
       res.status(403).json({ error: 'Forbidden: insufficient permissions' });
       return;
     }

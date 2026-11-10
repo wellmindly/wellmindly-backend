@@ -66,6 +66,10 @@ router.get('/counselors/slots', async (req: AuthenticatedRequest, res: Response)
   const dateStr = typeof req.query.date === 'string' ? req.query.date : undefined;
 
   const targetDate = dateStr ? new Date(dateStr) : new Date();
+  if (Number.isNaN(targetDate.getTime())) {
+    sendError(res, 'INVALID_INPUT', 'date must be a valid date (YYYY-MM-DD)', 400);
+    return;
+  }
   const startDateUtc = new Date(Date.UTC(targetDate.getUTCFullYear(), targetDate.getUTCMonth(), targetDate.getUTCDate(), 0, 0, 0));
   const endDateUtc = new Date(Date.UTC(targetDate.getUTCFullYear(), targetDate.getUTCMonth(), targetDate.getUTCDate(), 23, 59, 59));
 
@@ -145,8 +149,25 @@ router.post('/sessions/book', async (req: AuthenticatedRequest, res: Response) =
       ipAddress: req.ip || undefined,
     });
 
-
-    sendSuccess(res, session, 201);
+    // The transaction returns the session with full `user` rows for both the
+    // counselor and the student (it needs them for the emails). Sending that
+    // straight back handed every booking student the counselor's bcrypt hash,
+    // email and google id. Only the fields the booking UI shows go out.
+    const { counselor, student: _student, ...sessionFields } = session;
+    sendSuccess(
+      res,
+      {
+        ...sessionFields,
+        counselor: {
+          id: counselor.id,
+          credentials: counselor.credentials,
+          specializations: counselor.specializations,
+          avatarUrl: normalizeAvatarUrl(counselor.avatarUrl),
+          user: { firstName: counselor.user.firstName, lastName: counselor.user.lastName },
+        },
+      },
+      201
+    );
   } catch (err: any) {
     // bookSessionTransaction throws a bare code; each one gets a message the
     // booking UI can show as-is.
@@ -178,7 +199,8 @@ router.post('/sessions/book', async (req: AuthenticatedRequest, res: Response) =
     if (mapped) {
       sendError(res, err.message, mapped.message, mapped.status);
     } else {
-      sendError(res, 'BOOKING_FAILED', err.message || 'Failed to book session', 400);
+      console.error('Unexpected booking error:', err);
+      sendError(res, 'BOOKING_FAILED', 'Failed to book session. Please try again.', 500);
     }
   }
 });
@@ -238,6 +260,14 @@ router.post('/sessions/:id/cancel', async (req: AuthenticatedRequest, res: Respo
 
   if (!session) {
     sendError(res, 'NOT_FOUND', 'Session not found', 404);
+    return;
+  }
+
+  // Only an upcoming, still-active session can be cancelled. Without this a
+  // completed or already-cancelled session could be "cancelled" again, which
+  // rewrote its status and re-sent cancellation emails to both parties.
+  if (session.status !== 'CONFIRMED' && session.status !== 'PENDING') {
+    sendError(res, 'INVALID_STATE', 'This session can no longer be cancelled', 400);
     return;
   }
 
@@ -330,6 +360,16 @@ router.post('/sessions/:id/feedback', async (req: AuthenticatedRequest, res: Res
 
   if (!session) {
     sendError(res, 'NOT_FOUND', 'Session not found', 404);
+    return;
+  }
+
+  // Feedback is about a session that happened; a future or cancelled booking
+  // has nothing to rate, and those ratings skewed the counselor's average.
+  if (
+    session.startTime.getTime() > Date.now() ||
+    ['CANCELLED_BY_STUDENT', 'CANCELLED_BY_COUNSELOR', 'EXPIRED'].includes(session.status)
+  ) {
+    sendError(res, 'SESSION_NOT_ELIGIBLE', 'Feedback can only be given for a session that has taken place', 400);
     return;
   }
 

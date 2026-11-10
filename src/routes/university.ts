@@ -1,6 +1,13 @@
 import { Router, Request, Response } from 'express';
 import prisma from '../lib/prisma';
 import { authenticateJWT, authorizeRoles } from '../utils/jwt';
+import { parseStoredClassification } from '../utils/ai';
+
+// Smallest number of participating students for which per-band and per-quiz
+// breakdowns are returned. Below this a university admin could work out an
+// individual student's results from the distribution (e.g. one participant
+// means the distribution IS that student's result).
+const MIN_COHORT_SIZE = 5;
 
 const router = Router();
 
@@ -62,7 +69,11 @@ router.get(
             name: university.name,
             domain: university.domain,
           },
+          suppressed: true,
+          minCohortSize: MIN_COHORT_SIZE,
           totalStudents: 0,
+          participatingStudents: 0,
+          participationRate: 0,
           totalSubmissions: 0,
           clusterAverage: 0,
           classificationDistribution: [],
@@ -98,7 +109,12 @@ router.get(
       // Classification distribution across the university cluster
       const classificationCounts: Record<string, number> = {};
       for (const r of results) {
-        classificationCounts[r.classification] = (classificationCounts[r.classification] || 0) + 1;
+        // QuizResult.classification is a JSON blob holding the band label plus
+        // the student's individual answers and AI feedback. Only the band label
+        // may leave this route; grouping on the raw string sent each student's
+        // answers to the university dashboard as a "label".
+        const label = parseStoredClassification(r.classification).classification || 'Completed';
+        classificationCounts[label] = (classificationCounts[label] || 0) + 1;
       }
       const classificationDistribution = Object.entries(classificationCounts).map(([label, count]) => ({
         label,
@@ -107,7 +123,7 @@ router.get(
       }));
 
       // Per-quiz cluster metrics (anonymous aggregates only)
-      const quizMap: Record<string, { title: string; category: string; maxScore: number; scores: number[] }> = {};
+      const quizMap: Record<string, { title: string; category: string; maxScore: number; scores: number[]; students: Set<string> }> = {};
       for (const r of results) {
         if (!quizMap[r.quizId]) {
           quizMap[r.quizId] = {
@@ -115,20 +131,27 @@ router.get(
             category: r.quiz.category,
             maxScore: r.quiz.maxScore,
             scores: [],
+            students: new Set<string>(),
           };
         }
         quizMap[r.quizId].scores.push(r.overallScore);
+        quizMap[r.quizId].students.add(r.userId);
       }
 
-      const quizMetrics = Object.entries(quizMap).map(([quizId, data]) => ({
+      // A quiz taken by fewer than MIN_COHORT_SIZE distinct students is left
+      // out entirely, and min/max are never sent: the lowest or highest score
+      // in a group is by definition one identifiable student's score.
+      const quizMetrics = Object.entries(quizMap)
+        .filter(([, data]) => data.students.size >= MIN_COHORT_SIZE)
+        .map(([quizId, data]) => ({
         quizId,
         title: data.title,
         category: data.category,
         maxScore: data.maxScore,
         totalSubmissions: data.scores.length,
         averageScore: Math.round(data.scores.reduce((s, v) => s + v, 0) / data.scores.length),
-        minScore: Math.min(...data.scores),
-        maxObservedScore: Math.max(...data.scores),
+        minScore: null,
+        maxObservedScore: null,
       }));
 
       // Submission volume over time: daily counts for trend visualization
@@ -148,20 +171,25 @@ router.get(
         ? Math.round((participatingStudentIds.size / totalStudents) * 100)
         : 0;
 
+      // Small-cohort suppression: headline counts stay, breakdowns go.
+      const suppressed = participatingStudentIds.size < MIN_COHORT_SIZE;
+
       res.status(200).json({
         university: {
           id: university.id,
           name: university.name,
           domain: university.domain,
         },
+        suppressed,
+        minCohortSize: MIN_COHORT_SIZE,
         totalStudents,
         participatingStudents: participatingStudentIds.size,
         participationRate,
         totalSubmissions,
-        clusterAverage,
-        classificationDistribution,
-        quizMetrics,
-        submissionTrend,
+        clusterAverage: suppressed ? 0 : clusterAverage,
+        classificationDistribution: suppressed ? [] : classificationDistribution,
+        quizMetrics: suppressed ? [] : quizMetrics,
+        submissionTrend: suppressed ? [] : submissionTrend,
       });
     } catch (error) {
       console.error('Error fetching university metrics:', error);

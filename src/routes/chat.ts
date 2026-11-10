@@ -103,8 +103,11 @@ router.get(
   }
 );
 
-// Diagnostic route to check live backend connectivity
-router.get('/diagnose', async (req: Request, res: Response) => {
+// Diagnostic route to check live backend connectivity.
+// Admin-only: it reports configuration and the user count, and every call
+// makes a real (billed) Gemini request, so leaving it public let anyone run up
+// the AI bill with a loop of GETs.
+router.get('/diagnose', authenticateJWT, authorizeRoles('ADMIN', 'SUPER_ADMIN'), async (req: Request, res: Response) => {
   const diagnostics: any = {
     env: {
       NODE_ENV: process.env.NODE_ENV,

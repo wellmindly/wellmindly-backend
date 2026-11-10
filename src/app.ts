@@ -3,6 +3,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { env } from './config/env';
+import { authenticateJWT, authorizeRoles } from './utils/jwt';
 import authRouter from './routes/auth';
 import quizzesRouter from './routes/quizzes';
 import studentsRouter from './routes/students';
@@ -106,6 +107,11 @@ app.use('/api/contacts/counselor', publicContactLimiter);
 app.use('/api/auth/register', strictAuthLimiter);
 app.use('/api/auth/login', strictAuthLimiter);
 app.use('/api/auth/forgot-password', strictAuthLimiter);
+// These two consume or mint one-time codes (reset-password checks a code that
+// controls the account; send-otp mails one), so they get the same limiter.
+app.use('/api/auth/reset-password', strictAuthLimiter);
+app.use('/api/auth/send-otp', strictAuthLimiter);
+app.use('/api/auth/google/callback', strictAuthLimiter);
 app.use('/api/auth/delete-account', strictAuthLimiter);
 app.use('/api/v1/counselors/login', strictAuthLimiter);
 app.use('/api/v1/counselors/forgot-password', strictAuthLimiter);
@@ -130,7 +136,11 @@ app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok', message: 'API is healthy' });
 });
 
-app.get('/api/health/db', async (req, res) => {
+// Connectivity diagnostics: egress IP, the database host's DNS answer and raw
+// driver errors. Useful to an operator, and equally useful to anyone mapping
+// the infrastructure, so it is admin-only. /health above stays public for the
+// load balancer.
+app.get('/api/health/db', authenticateJWT, authorizeRoles('ADMIN', 'SUPER_ADMIN'), async (req, res) => {
   const dns = require('dns').promises;
   let dnsLookup: any = null;
   let egressIp: any = null;

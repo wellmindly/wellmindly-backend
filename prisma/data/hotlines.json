@@ -104,10 +104,18 @@
     "country": "Azerbaijan"
   },
   {
-    "name": "National Suicide Prevention Lifeline",
-    "description": "The National Suicide Prevention Lifeline (http://suicidepreventionlifeline.org/) is a 24-hour, toll-free, confidential suicide prevention hotline available to anyone in suicidal crisis or emotional distress. It provides Spanish-speaking counselors, as well as options for deaf and hard of hearing individuals. It is only available in the United States. A 24-hour Online Chat in partnership with Contact USA is also available.",
+    "name": "800 HOPE Mental Health Support Line",
+    "description": "The UAE national mental health support line, 800 HOPE (800 4673), offers free, confidential psychological support by phone.",
+    "phone": "8004673",
+    "website": "",
+    "category": "Crisis & Suicide Support",
+    "country": "United Arab Emirates"
+  },
+  {
+    "name": "988 Lifeline Chat",
+    "description": "Free, confidential 24/7 online chat with the 988 Suicide & Crisis Lifeline (formerly the National Suicide Prevention Lifeline) at https://988lifeline.org/chat. Spanish-language support and options for deaf and hard of hearing people are available.",
     "phone": "Online Support",
-    "website": "http://suicidepreventionlifeline.org/",
+    "website": "https://988lifeline.org/chat",
     "category": "Crisis & Suicide Support",
     "country": "United States"
   },
@@ -120,10 +128,10 @@
     "country": "United States"
   },
   {
-    "name": "Nacional de Prevención del Suicidio",
-    "description": "Nacional de Prevención del Suicidio: 1-888-628-9454",
-    "phone": "1-888-628-9454",
-    "website": "",
+    "name": "988 Lifeline en Español",
+    "description": "Línea 988 de Prevención del Suicidio y Crisis: llame al 988 y oprima 2 para hablar en español (24/7, gratis y confidencial).",
+    "phone": "988",
+    "website": "https://988lifeline.org/es/",
     "category": "Crisis & Suicide Support",
     "country": "United States"
   },
@@ -132,14 +140,6 @@
     "description": "The Veterans Crisis Line (https://www.veteranscrisisline.net/) is a 24-hour, toll-free hotline that provides phone, webchat, and text options available to military veterans and their families. It provides options for deaf and hard of hearing individuals.",
     "phone": "Online Support",
     "website": "https://www.veteranscrisisline.net/",
-    "category": "Veterans Support",
-    "country": "United States"
-  },
-  {
-    "name": "Veterans Crisis Line (1-800-273-8255, Press 1)",
-    "description": "The Veterans Crisis Line can be reached at 1-800-273-8255, followed by Pressing 1.",
-    "phone": "1-800-273-8255",
-    "website": "",
     "category": "Veterans Support",
     "country": "United States"
   },
@@ -224,7 +224,7 @@
     "country": "Bangladesh"
   },
   {
-    "name": "511 is the number",
+    "name": "Ambulance (Emergency)",
     "description": "511 is the number to contact an ambulance in Barbados.",
     "phone": "511",
     "website": "",
@@ -232,7 +232,7 @@
     "country": "Barbados"
   },
   {
-    "name": "311 is the number",
+    "name": "Fire Service (Emergency)",
     "description": "311 is the number to contact a fire station for a fire truck in Barbados.",
     "phone": "311",
     "website": "",
@@ -488,7 +488,7 @@
     "country": "Cyprus"
   },
   {
-    "name": "Livslinien (https://www.livslinien.dk) offers telephone support 11am-4am on 70 201 201, or online chat",
+    "name": "Livslinien",
     "description": "Livslinien (https://www.livslinien.dk) offers telephone support 11am-4am on 70 201 201, or online chat",
     "phone": "70201201",
     "website": "https://www.livslinien.dk",
@@ -656,6 +656,14 @@
     "country": "Iceland"
   },
   {
+    "name": "Tele-MANAS",
+    "description": "Tele-MANAS is the Government of India's free 24/7 national tele-mental health helpline. Call 14416 or 1-800-891-4416 for support in multiple Indian languages.",
+    "phone": "14416",
+    "website": "https://telemanas.mohfw.gov.in",
+    "category": "Crisis & Suicide Support",
+    "country": "India"
+  },
+  {
     "name": "Samaritans Mumbai",
     "description": "Samaritans Mumbai: (samaritansmumbai.com) - +91 8422984528, +91 8422984529, +91 8422984530 - 3 pm to 9 pm, all days. samaritans.helpline@gmail.com. Helpline providing emotional support for those who are stressed, distressed, depressed, or suicidal.",
     "phone": "+918422984528",
@@ -736,7 +744,7 @@
     "country": "Ireland"
   },
   {
-    "name": "Freephone 116 123 for",
+    "name": "Samaritans Ireland",
     "description": "Freephone 116 123 for Samaritans anywhere in Ireland or Northern Ireland.",
     "phone": "116123",
     "website": "",
@@ -744,7 +752,7 @@
     "country": "Ireland"
   },
   {
-    "name": "Text 50808",
+    "name": "50808 Text Service",
     "description": "50808 (https://text50808.ie/) is a free, confidential 24/7 national crisis-intervention text-message service. It can be reached by texting HELLO to 50808.",
     "phone": "Online Support",
     "website": "https://text50808.ie/",
@@ -1152,7 +1160,7 @@
     "country": "Romania"
   },
   {
-    "name": "051 (or 8495051) is a 24-hour emergency number for Moscow residents",
+    "name": "Moscow Emergency Psychological Help (051)",
     "description": "051 (or 8495051) is a 24-hour emergency number for Moscow residents",
     "phone": "051",
     "website": "",

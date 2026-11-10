@@ -10,7 +10,13 @@
 const { Client } = require('pg');
 require('dotenv').config();
 
-const connectionString = process.env.DATABASE_URL || 'postgresql://postgres:Wellmindly_2026@wellmindly-db.ctqo2kwcmwch.ap-south-1.rds.amazonaws.com:5432/wellmindly?sslmode=require';
+// No fallback: this used to default to the production RDS URL, password
+// included, so running it with no DATABASE_URL set wiped production.
+const connectionString = process.env.DATABASE_URL;
+if (!connectionString) {
+  console.error('DATABASE_URL is not defined in environment.');
+  process.exit(1);
+}
 
 const isLocal = connectionString.includes('localhost') || connectionString.includes('127.0.0.1');
 

@@ -26,13 +26,17 @@ export function authenticateJWT(req: AuthenticatedRequest, res: Response, next: 
 }
 
 export function requireRoles(allowedRoles: Role[]) {
+  // SUPER_ADMIN satisfies any ADMIN requirement (same rule as authorizeRoles).
+  const roles: Role[] = allowedRoles.includes('ADMIN' as Role) && !allowedRoles.includes('SUPER_ADMIN' as Role)
+    ? [...allowedRoles, 'SUPER_ADMIN' as Role]
+    : allowedRoles;
   return (req: AuthenticatedRequest, res: Response, next: NextFunction): void => {
     if (!req.user) {
       sendError(res, 'UNAUTHORIZED', 'Authentication required', 401);
       return;
     }
 
-    if (!allowedRoles.includes(req.user.role as Role)) {
+    if (!roles.includes(req.user.role as Role)) {
       sendError(
         res,
         'FORBIDDEN',

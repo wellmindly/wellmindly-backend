@@ -4,6 +4,7 @@ import { authenticateJWT, authorizeRoles } from '../utils/jwt';
 import { parseStoredClassification } from '../utils/ai';
 import { TalkStatus } from '../generated/prisma/enums';
 import { uploadToS3 } from '../utils/s3';
+import { parseImageUpload } from '../utils/imageUpload';
 import {
   getAllowedDomains,
   getBypassEmails,
@@ -26,22 +27,13 @@ router.post(
   authorizeRoles('ADMIN', 'SUPER_ADMIN'),
   async (req: Request, res: Response) => {
     try {
-      const { fileName, mimeType, base64Data, folder } = req.body || {};
-
-      if (!base64Data) {
-        res.status(400).json({ error: 'base64Data is required' });
+      const upload = parseImageUpload(req.body);
+      if (!upload.ok) {
+        res.status(400).json({ error: upload.message });
         return;
       }
 
-      const cleanBase64 = base64Data.includes('base64,')
-        ? base64Data.split('base64,')[1]
-        : base64Data;
-
-      const buffer = Buffer.from(cleanBase64, 'base64');
-      const name = fileName || `avatar_${Date.now()}.png`;
-      const type = mimeType || 'image/png';
-
-      const result = await uploadToS3(buffer, name, type, folder || 'avatars');
+      const result = await uploadToS3(upload.buffer, upload.fileName, upload.mimeType, upload.folder);
 
       res.status(200).json({
         success: true,
@@ -226,6 +218,9 @@ router.get(
       const studentId = req.params.id as string;
       const student = await prisma.user.findFirst({
         where: { id: studentId, role: 'STUDENT', deletedAt: null },
+        // The admin view has no use for credentials; `include` alone returned
+        // passwordHash and googleId with every profile.
+        omit: { passwordHash: true, googleId: true },
         include: {
           university: {
             select: {
@@ -553,7 +548,11 @@ router.put(
         data: { isActive: !!isActive }
       });
       res.status(200).json({ room });
-    } catch (error) {
+    } catch (error: any) {
+      if (error?.code === 'P2025') {
+        res.status(404).json({ error: 'Talk room not found' });
+        return;
+      }
       console.error('Error updating talk room:', error);
       res.status(500).json({ error: 'Failed to update talk room' });
     }
@@ -574,7 +573,11 @@ router.delete(
         where: { id: req.params.roomId as string }
       });
       res.status(200).json({ success: true });
-    } catch (error) {
+    } catch (error: any) {
+      if (error?.code === 'P2025') {
+        res.status(404).json({ error: 'Talk room not found' });
+        return;
+      }
       console.error('Error deleting talk room:', error);
       res.status(500).json({ error: 'Failed to delete talk room' });
     }

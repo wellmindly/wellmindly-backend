@@ -14,6 +14,7 @@ import { logAuditEvent } from '../../utils/auditLogger';
 import { uploadToS3, getS3Object } from '../../utils/s3';
 import { escapeHtml } from '../../utils/escapeHtml';
 import { buildJitsiMeetingLink } from '../../utils/jitsi';
+import { parseImageUpload, SAFE_IMAGE_MIME_TYPES } from '../../utils/imageUpload';
 
 export function normalizeAvatarUrl(url?: string | null): string | null {
   if (!url) return null;
@@ -39,7 +40,7 @@ const router = Router();
 router.post('/verify-invite', async (req: Request, res: Response) => {
   const { token } = req.body as { token?: string };
 
-  if (!token) {
+  if (!token || typeof token !== 'string') {
     sendError(res, 'INVALID_INPUT', 'Invitation token is required', 400);
     return;
   }
@@ -66,7 +67,7 @@ router.post('/verify-invite', async (req: Request, res: Response) => {
  */
 router.post('/setup-upload', async (req: Request, res: Response) => {
   try {
-    const { token, fileName, mimeType, base64Data, folder } = req.body || {};
+    const { token } = req.body || {};
 
     if (!token) {
       sendError(res, 'INVALID_INPUT', 'Invitation token is required', 400);
@@ -82,20 +83,13 @@ router.post('/setup-upload', async (req: Request, res: Response) => {
       return;
     }
 
-    if (!base64Data) {
-      sendError(res, 'INVALID_INPUT', 'base64Data is required', 400);
+    const upload = parseImageUpload(req.body);
+    if (!upload.ok) {
+      sendError(res, 'INVALID_INPUT', upload.message, 400);
       return;
     }
 
-    const cleanBase64 = base64Data.includes('base64,')
-      ? base64Data.split('base64,')[1]
-      : base64Data;
-
-    const buffer = Buffer.from(cleanBase64, 'base64');
-    const name = fileName || `avatar_${Date.now()}.png`;
-    const type = mimeType || 'image/png';
-
-    const result = await uploadToS3(buffer, name, type, folder || 'avatars');
+    const result = await uploadToS3(upload.buffer, upload.fileName, upload.mimeType, upload.folder);
 
     sendSuccess(res, {
       message: 'File uploaded successfully',
@@ -126,6 +120,11 @@ router.post('/setup-profile', async (req: Request, res: Response) => {
 
   if (!token || !password || !credentials) {
     sendError(res, 'INVALID_INPUT', 'Token, password, and credentials are required', 400);
+    return;
+  }
+
+  if (typeof password !== 'string' || password.length < 8) {
+    sendError(res, 'INVALID_INPUT', 'Password must be at least 8 characters long', 400);
     return;
   }
 
@@ -200,8 +199,11 @@ router.post('/login', async (req: Request, res: Response) => {
     return;
   }
 
+  // Lowercased like every other auth route; counselor emails are stored
+  // lowercased (invite + /me/account), so a capitalised address typed on a
+  // phone keyboard used to fail with "invalid email or password".
   const user = await prisma.user.findUnique({
-    where: { email },
+    where: { email: typeof email === 'string' ? email.toLowerCase().trim() : '' },
     include: { counselorProfile: true },
   });
 
@@ -261,13 +263,12 @@ router.post('/forgot-password', async (req: Request, res: Response) => {
       include: { counselorProfile: true },
     });
 
-    if (!user || user.role !== 'COUNSELOR') {
-      sendError(res, 'USER_NOT_FOUND', 'No counselor account found with that email address', 404);
-      return;
-    }
-
-    if (user.counselorProfile?.status === 'SUSPENDED') {
-      sendError(res, 'ACCOUNT_SUSPENDED', 'Your counselor account is suspended', 403);
+    // One answer for "no such counselor", "suspended" and "sent": the old 404
+    // told anyone which addresses belong to counselors.
+    const genericMessage = 'If a counselor account exists for that email, a password reset link has been sent.';
+    if (!user || user.role !== 'COUNSELOR' || user.counselorProfile?.status === 'SUSPENDED') {
+      await new Promise((resolve) => setTimeout(resolve, 400 + Math.floor(Math.random() * 400)));
+      sendSuccess(res, { message: genericMessage });
       return;
     }
 
@@ -282,8 +283,9 @@ router.post('/forgot-password', async (req: Request, res: Response) => {
     const counselorPortalUrl = env.COUNSELOR_PORTAL_URL.replace(/\/+$/, '');
     const resetUrl = `${counselorPortalUrl}/reset-password?token=${encodeURIComponent(resetToken)}&email=${encodeURIComponent(user.email)}`;
 
-    await sendEmail({
+    const delivered = await sendEmail({
       to: user.email,
+      sensitive: true,
       subject: 'Reset Your Counselor Password - WellMindly',
       html: getPasswordResetLinkTemplate({
         name: user.firstName ? `${user.firstName} ${user.lastName}`.trim() : 'Counselor',
@@ -300,9 +302,12 @@ router.post('/forgot-password', async (req: Request, res: Response) => {
       ipAddress: req.ip || null,
     });
 
-    sendSuccess(res, {
-      message: 'Password reset link has been sent to your email.',
-    });
+    if (!delivered) {
+      sendError(res, 'EMAIL_UNAVAILABLE', 'We could not send a reset link right now. Please try again in a few minutes.', 503);
+      return;
+    }
+
+    sendSuccess(res, { message: genericMessage });
   } catch (err: any) {
     console.error('Error processing counselor forgot-password:', err);
     sendError(res, 'INTERNAL_ERROR', 'Failed to process password reset request. Please try again.', 500);
@@ -462,6 +467,10 @@ router.get('/assets/:folder/:filename', async (req: Request, res: Response) => {
     // Enable cross-origin embedding so any frontend (student, counselor, admin) can display images
     res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
     res.setHeader('Access-Control-Allow-Origin', '*');
+    // Belt and braces for anything uploaded before type checks existed: never
+    // let a proxied asset execute script or be sniffed into HTML.
+    res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
+    res.setHeader('X-Content-Type-Options', 'nosniff');
 
     const candidateFilenames = Array.from(new Set([
       safeFilename,
@@ -488,9 +497,10 @@ router.get('/assets/:folder/:filename', async (req: Request, res: Response) => {
             '.jpeg': 'image/jpeg',
             '.webp': 'image/webp',
             '.gif': 'image/gif',
-            '.svg': 'image/svg+xml',
           };
-          res.setHeader('Content-Type', mimeMap[ext] || 'image/png');
+          // SVG is deliberately absent: an SVG served from the API origin can
+          // run script. Unknown types go out as an opaque download.
+          res.setHeader('Content-Type', mimeMap[ext] || 'application/octet-stream');
           res.setHeader('Cache-Control', 'public, max-age=86400');
           return fs.createReadStream(localPath).pipe(res);
         }
@@ -502,7 +512,9 @@ router.get('/assets/:folder/:filename', async (req: Request, res: Response) => {
       const key = `${safeFolder}/${fname}`;
       const s3Obj = await getS3Object(key);
       if (s3Obj && s3Obj.body) {
-        res.setHeader('Content-Type', s3Obj.contentType || 'image/png');
+        // Trust the stored type only for raster images (see the local branch).
+        const storedType = (s3Obj.contentType || '').toLowerCase();
+        res.setHeader('Content-Type', SAFE_IMAGE_MIME_TYPES.has(storedType) ? storedType : 'application/octet-stream');
         res.setHeader('Cache-Control', 'public, max-age=86400'); // Cache for 24h
 
         if (typeof s3Obj.body.pipe === 'function') {
@@ -552,7 +564,24 @@ router.get('/me/profile', async (req: AuthenticatedRequest, res: Response) => {
  * PUT /api/v1/counselors/me/profile
  */
 router.put('/me/profile', async (req: AuthenticatedRequest, res: Response) => {
-  const { specializations, credentials, bio, phone, avatarUrl, timezone } = req.body;
+  const { specializations, credentials, bio, phone, avatarUrl, timezone } = req.body as {
+    specializations?: string[];
+    credentials?: string;
+    bio?: string | null;
+    phone?: string | null;
+    avatarUrl?: string | null;
+    timezone?: string | null;
+  };
+
+  const optionalString = (v: unknown) => v === undefined || v === null || typeof v === 'string';
+  if (
+    (specializations !== undefined && (!Array.isArray(specializations) || specializations.some((s: unknown) => typeof s !== 'string'))) ||
+    (credentials !== undefined && typeof credentials !== 'string') || !optionalString(bio) || !optionalString(phone) ||
+    !optionalString(avatarUrl) || !optionalString(timezone)
+  ) {
+    sendError(res, 'INVALID_INPUT', 'Invalid profile fields', 400);
+    return;
+  }
 
   const profile = await prisma.counselorProfile.findUnique({ where: { userId: req.user?.sub } });
   if (!profile) {
@@ -576,7 +605,8 @@ router.put('/me/profile', async (req: AuthenticatedRequest, res: Response) => {
       phone,
       avatarUrl,
     },
-    include: { user: true },
+    // Not `user: true`: that returned the counselor's own passwordHash and googleId.
+    include: { user: { select: { id: true, email: true, firstName: true, lastName: true, timezone: true } } },
   });
 
   updatedProfile.avatarUrl = normalizeAvatarUrl(updatedProfile.avatarUrl);
@@ -589,22 +619,13 @@ router.put('/me/profile', async (req: AuthenticatedRequest, res: Response) => {
  */
 router.post('/me/upload', authenticateJWT, requireRoles(['COUNSELOR', 'ADMIN', 'SUPER_ADMIN']), async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const { fileName, mimeType, base64Data, folder } = req.body || {};
-
-    if (!base64Data) {
-      sendError(res, 'INVALID_INPUT', 'base64Data is required', 400);
+    const upload = parseImageUpload(req.body);
+    if (!upload.ok) {
+      sendError(res, 'INVALID_INPUT', upload.message, 400);
       return;
     }
 
-    const cleanBase64 = base64Data.includes('base64,')
-      ? base64Data.split('base64,')[1]
-      : base64Data;
-
-    const buffer = Buffer.from(cleanBase64, 'base64');
-    const name = fileName || `avatar_${Date.now()}.png`;
-    const type = mimeType || 'image/png';
-
-    const result = await uploadToS3(buffer, name, type, folder || 'avatars');
+    const result = await uploadToS3(upload.buffer, upload.fileName, upload.mimeType, upload.folder);
 
     const userId = req.user?.sub;
     if (userId) {
@@ -711,7 +732,7 @@ router.put('/me/account', async (req: AuthenticatedRequest, res: Response) => {
     sendSuccess(res, { user: updatedUser, message: 'Account credentials updated successfully.' });
   } catch (err: any) {
     console.error('Error updating counselor account:', err);
-    sendError(res, 'INTERNAL_ERROR', err?.message || 'Failed to update account credentials', 500);
+    sendError(res, 'INTERNAL_ERROR', 'Failed to update account credentials', 500);
   }
 });
 
@@ -751,6 +772,13 @@ router.post('/me/exceptions', async (req: AuthenticatedRequest, res: Response) =
     return;
   }
 
+  const start = new Date(startDate);
+  const end = new Date(endDate);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end < start) {
+    sendError(res, 'INVALID_INPUT', 'startDate and endDate must be valid dates, with endDate after startDate', 400);
+    return;
+  }
+
   const profile = await prisma.counselorProfile.findUnique({ where: { userId: req.user?.sub } });
   if (!profile) {
     sendError(res, 'NOT_FOUND', 'Profile not found', 404);
@@ -760,8 +788,8 @@ router.post('/me/exceptions', async (req: AuthenticatedRequest, res: Response) =
   const exception = await prisma.counselorAvailabilityException.create({
     data: {
       counselorId: profile.id,
-      startDate: new Date(startDate),
-      endDate: new Date(endDate),
+      startDate: start,
+      endDate: end,
       isFullDay: isFullDay ?? false,
       reason: reason || 'Blocked by Counselor',
     },
@@ -805,6 +833,29 @@ router.put('/me/availability', async (req: AuthenticatedRequest, res: Response) 
   const { availabilities } = req.body as {
     availabilities?: { dayOfWeek: number; startTime: string; endTime: string }[];
   };
+
+  // Validate before the delete-then-insert below, so a bad row is a 400 and
+  // not a 500 halfway through replacing the counselor's schedule.
+  const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
+  if (
+    availabilities !== undefined &&
+    (!Array.isArray(availabilities) ||
+      availabilities.some(
+        (a) =>
+          !a ||
+          !Number.isInteger(a.dayOfWeek) ||
+          a.dayOfWeek < 0 ||
+          a.dayOfWeek > 6 ||
+          typeof a.startTime !== 'string' ||
+          typeof a.endTime !== 'string' ||
+          !HHMM.test(a.startTime) ||
+          !HHMM.test(a.endTime) ||
+          a.endTime <= a.startTime
+      ))
+  ) {
+    sendError(res, 'INVALID_INPUT', 'Each availability needs dayOfWeek 0-6 and HH:MM startTime before endTime', 400);
+    return;
+  }
 
   const profile = await prisma.counselorProfile.findUnique({ where: { userId: req.user?.sub } });
   if (!profile) {
@@ -923,6 +974,174 @@ router.post('/me/sessions/:id/notes', async (req: AuthenticatedRequest, res: Res
   });
 
   sendSuccess(res, note, 201);
+});
+
+const CANCELLED_STATUSES: string[] = ['CANCELLED_BY_STUDENT', 'CANCELLED_BY_COUNSELOR', 'EXPIRED'];
+
+/**
+ * PUT /api/v1/counselors/me/sessions/:id/notes/:noteId
+ * Edit a draft note, or finalise it with { isDraft: false }. Only the note's
+ * own counselor may edit it, and only while it is still a draft: a finalised
+ * note is part of the clinical record and is immutable (409).
+ * Body: { title?: string, content?: string, isPrivate?: boolean, isDraft?: boolean }
+ */
+router.put('/me/sessions/:id/notes/:noteId', async (req: AuthenticatedRequest, res: Response) => {
+  const sessionId = String(req.params.id);
+  const noteId = String(req.params.noteId);
+  const { title, content, isPrivate, isDraft } = req.body as {
+    title?: unknown;
+    content?: unknown;
+    isPrivate?: unknown;
+    isDraft?: unknown;
+  };
+
+  if (
+    (title !== undefined && typeof title !== 'string') ||
+    (content !== undefined && typeof content !== 'string') ||
+    (isPrivate !== undefined && typeof isPrivate !== 'boolean') ||
+    (isDraft !== undefined && typeof isDraft !== 'boolean')
+  ) {
+    sendError(res, 'INVALID_INPUT', 'title/content must be strings and isPrivate/isDraft booleans', 400);
+    return;
+  }
+
+  const profile = await prisma.counselorProfile.findUnique({ where: { userId: req.user?.sub } });
+  if (!profile) {
+    sendError(res, 'NOT_FOUND', 'Profile not found', 404);
+    return;
+  }
+
+  const note = await prisma.sessionNote.findFirst({
+    where: { id: noteId, sessionId, counselorId: profile.id, deletedAt: null },
+  });
+  if (!note) {
+    sendError(res, 'NOT_FOUND', 'Note not found', 404);
+    return;
+  }
+  if (!note.isDraft) {
+    sendError(res, 'NOTE_FINALISED', 'This note has been finalised and can no longer be edited', 409);
+    return;
+  }
+
+  const updated = await prisma.sessionNote.update({
+    where: { id: note.id },
+    data: {
+      ...(title !== undefined ? { title: title as string } : {}),
+      ...(content !== undefined ? { content: content as string } : {}),
+      ...(isPrivate !== undefined ? { isPrivate: isPrivate as boolean } : {}),
+      ...(isDraft !== undefined ? { isDraft: isDraft as boolean } : {}),
+    },
+  });
+
+  logAuditEvent({
+    actorId: req.user?.sub || null,
+    action: updated.isDraft ? 'UPDATE_SESSION_NOTE_DRAFT' : 'FINALISE_SESSION_NOTE',
+    targetEntity: 'SessionNote',
+    targetId: updated.id,
+  });
+
+  sendSuccess(res, updated);
+});
+
+/**
+ * PATCH /api/v1/counselors/me/sessions/:id/status
+ * The session's own counselor moves it on. Body: { status, reason? }
+ *   CONFIRMED | IN_PROGRESS -> COMPLETED            (only once the start time has passed)
+ *   CONFIRMED               -> NO_SHOW              (only once the start time has passed)
+ *   PENDING | CONFIRMED     -> CANCELLED_BY_COUNSELOR (only before the session ends; student is emailed)
+ * Anything else is 409 INVALID_TRANSITION.
+ */
+router.patch('/me/sessions/:id/status', async (req: AuthenticatedRequest, res: Response) => {
+  const sessionId = String(req.params.id);
+  const { status, reason } = req.body as { status?: unknown; reason?: unknown };
+
+  const transitions: Record<string, string[]> = {
+    COMPLETED: ['CONFIRMED', 'IN_PROGRESS'],
+    NO_SHOW: ['CONFIRMED'],
+    CANCELLED_BY_COUNSELOR: ['PENDING', 'CONFIRMED'],
+  };
+
+  if (typeof status !== 'string' || !transitions[status]) {
+    sendError(res, 'INVALID_INPUT', `status must be one of ${Object.keys(transitions).join(', ')}`, 400);
+    return;
+  }
+  if (reason !== undefined && typeof reason !== 'string') {
+    sendError(res, 'INVALID_INPUT', 'reason must be a string', 400);
+    return;
+  }
+
+  const profile = await prisma.counselorProfile.findUnique({ where: { userId: req.user?.sub }, include: { user: true } });
+  const session = await prisma.counselorSession.findFirst({
+    where: { id: sessionId, deletedAt: null },
+    include: { student: { select: { email: true, firstName: true } } },
+  });
+
+  // Another counselor's session is reported as missing, as on the notes route.
+  if (!profile || !session || session.counselorId !== profile.id) {
+    sendError(res, 'NOT_FOUND', 'Session not found', 404);
+    return;
+  }
+
+  if (!transitions[status].includes(session.status)) {
+    sendError(res, 'INVALID_TRANSITION', `A ${session.status} session cannot be marked ${status}`, 409);
+    return;
+  }
+
+  const now = Date.now();
+  if ((status === 'COMPLETED' || status === 'NO_SHOW') && session.startTime.getTime() > now) {
+    sendError(res, 'SESSION_NOT_STARTED', 'A session can only be marked completed or no-show after it has started', 409);
+    return;
+  }
+  if (status === 'CANCELLED_BY_COUNSELOR' && session.endTime.getTime() <= now) {
+    sendError(res, 'SESSION_ENDED', 'A session that has already ended cannot be cancelled', 409);
+    return;
+  }
+
+  // Optimistic lock on the status we validated against, so two quick clicks
+  // (or a student cancelling at the same moment) cannot both win.
+  const result = await prisma.counselorSession.updateMany({
+    where: { id: session.id, status: session.status },
+    data: {
+      status: status as any,
+      ...(status === 'CANCELLED_BY_COUNSELOR'
+        ? { cancellationReason: (reason as string | undefined)?.trim() || 'Cancelled by counselor' }
+        : {}),
+      version: { increment: 1 },
+    },
+  });
+  if (result.count === 0) {
+    sendError(res, 'CONFLICT', 'The session was changed by someone else. Please refresh and try again.', 409);
+    return;
+  }
+
+  const updated = await prisma.counselorSession.findUnique({ where: { id: session.id } });
+
+  logAuditEvent({
+    actorId: req.user?.sub || null,
+    action: 'UPDATE_SESSION_STATUS_BY_COUNSELOR',
+    targetEntity: 'CounselorSession',
+    targetId: session.id,
+    details: { from: session.status, to: status },
+  });
+
+  if (status === 'CANCELLED_BY_COUNSELOR') {
+    const formattedTime = session.startTime.toUTCString();
+    queueEmail({
+      to: session.student.email,
+      subject: `Cancelled: Counseling Session on ${formattedTime}`,
+      html: `
+        <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1e293b;">
+          <h2 style="color: #4f46e5;">Counseling Session Cancelled</h2>
+          <p>Hello <strong>${escapeHtml(session.student.firstName)}</strong>,</p>
+          <p>Your session with <strong>${escapeHtml(profile.user.firstName)} ${escapeHtml(profile.user.lastName)}</strong> on ${formattedTime} (UTC) has been cancelled by your counselor.</p>
+          <p style="margin: 4px 0;"><strong>Reason:</strong> ${escapeHtml(updated?.cancellationReason || 'Cancelled by counselor')}</p>
+          <p style="color: #64748b; font-size: 14px;">You can book another session whenever you are ready.</p>
+        </div>
+      `,
+    });
+  }
+
+  sendSuccess(res, updated);
 });
 
 /**
@@ -1045,6 +1264,11 @@ router.post('/me/sessions/:id/feedback', async (req: AuthenticatedRequest, res: 
   // Same ownership rule as the notes endpoint above.
   if (session.counselorId !== profile.id) {
     sendError(res, 'NOT_FOUND', 'Session not found', 404);
+    return;
+  }
+
+  if (session.startTime.getTime() > Date.now() || CANCELLED_STATUSES.includes(session.status)) {
+    sendError(res, 'SESSION_NOT_ELIGIBLE', 'Feedback can only be given for a session that has taken place', 400);
     return;
   }
 

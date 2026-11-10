@@ -21,35 +21,49 @@ import { normalizeAvatarUrl } from './v1/counselors';
 const router = Router();
 
 const generalContactSchema = z.object({
-  name: z.string().min(1, 'Name is required').trim(),
+  name: z.string().min(1, 'Name is required').max(200, 'Name is too long').trim(),
   email: z
     .string()
     .min(1, 'Email is required')
     .transform((val) => normalizeEmail(val))
     .refine(isValidEmailSyntax, { message: 'Invalid email address' }),
-  subject: z.string().optional(),
-  message: z.string().min(1, 'Message is required'),
+  subject: z.string().max(300, 'Subject is too long').optional(),
+  message: z.string().min(1, 'Message is required').max(5000, 'Message is too long (5000 characters max)'),
   captchaToken: z.string().optional(),
   hp_confirm: z.string().optional(),
   _t: z.union([z.string(), z.number()]).optional(),
 });
 
+// Optional phone: digits plus the usual separators, 7-15 digits in total
+// (E.164 maximum). Empty string is treated as "not given".
+const phoneSchema = z
+  .string()
+  .trim()
+  .max(25, 'Phone number is too long')
+  .refine((v) => v === '' || /^\+?[0-9 ()\-.]+$/.test(v), { message: 'Phone number may only contain digits, spaces, +, -, ( ) and .' })
+  .refine((v) => {
+    if (v === '') return true;
+    const digits = v.replace(/\D/g, '').length;
+    return digits >= 7 && digits <= 15;
+  }, { message: 'Phone number must have between 7 and 15 digits' })
+  .optional();
+
 const universityContactSchema = z.object({
-  name: z.string().min(1, 'Name is required'),
-  email: z.string().email('Invalid email address'),
-  universityName: z.string().min(1, 'University name is required'),
-  role: z.string().min(1, 'Role is required'),
-  phone: z.string().optional(),
-  message: z.string().min(1, 'Message is required'),
+  name: z.string().min(1, 'Name is required').max(200, 'Name is too long'),
+  email: z.string().email('Invalid email address').max(254),
+  universityName: z.string().min(1, 'University name is required').max(300, 'University name is too long'),
+  role: z.string().min(1, 'Role is required').max(200, 'Role is too long'),
+  phone: phoneSchema,
+  message: z.string().min(1, 'Message is required').max(5000, 'Message is too long (5000 characters max)'),
 });
 
 const counselorContactSchema = z.object({
-  name: z.string().min(1, 'Name is required'),
-  email: z.string().email('Invalid email address'),
-  phone: z.string().optional(),
-  credentials: z.string().min(1, 'Credentials are required'),
-  experience: z.string().min(1, 'Experience detail is required'),
-  message: z.string().min(1, 'Message is required'),
+  name: z.string().min(1, 'Name is required').max(200, 'Name is too long'),
+  email: z.string().email('Invalid email address').max(254),
+  phone: phoneSchema,
+  credentials: z.string().min(1, 'Credentials are required').max(1000, 'Credentials are too long'),
+  experience: z.string().min(1, 'Experience detail is required').max(5000, 'Experience is too long (5000 characters max)'),
+  message: z.string().min(1, 'Message is required').max(5000, 'Message is too long (5000 characters max)'),
 });
 
 // --- Public Endpoints ---
@@ -1352,8 +1366,9 @@ router.post(
         const counselorPortalBase = isLocalDev ? (env.COUNSELOR_PORTAL_URL || 'http://localhost:5174') : 'https://counselor.wellmindly.com';
         const setupUrl = `${counselorPortalBase}/setup-profile?token=${token}`;
 
-        await sendEmail({
+        const emailDelivered = await sendEmail({
           to: cleanEmail,
+          sensitive: true,
           subject: 'Congratulations! Your WellMindly Counselor Application is Approved',
           html: `
             <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1e293b; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 16px;">
@@ -1380,24 +1395,33 @@ router.post(
             details: {
               approvedBy: req.user?.email || 'admin',
               targetEmail: cleanEmail,
-              setupUrl,
+              // setupUrl deliberately not stored: it carries the invite token.
               timestamp: new Date().toISOString(),
             },
           },
         });
 
+        // The approval and invitation are saved either way; emailDelivered
+        // tells the admin whether they must pass the setup link on by hand.
         res.status(200).json({
           success: true,
-          message: `Counselor application approved! Onboarding invitation emailed to ${cleanEmail}`,
+          emailDelivered,
+          message: emailDelivered
+            ? `Counselor application approved! Onboarding invitation emailed to ${cleanEmail}`
+            : `Counselor application approved, but the invitation email to ${cleanEmail} could not be sent. Share the setup link with them directly.`,
           setupUrl,
           invitation,
         });
       } else {
+        // The application form is public, so its email is unverified. Turning
+        // whatever account owns that address into a counselor let anyone apply
+        // with a student's (or an admin's) email and have it converted on
+        // approval. Only an existing counselor account is reused here.
         if (user.role !== 'COUNSELOR') {
-          user = await prisma.user.update({
-            where: { id: user.id },
-            data: { role: 'COUNSELOR' },
+          res.status(409).json({
+            error: `${cleanEmail} already belongs to a ${user.role.toLowerCase()} account, so it cannot be approved as a counselor. Ask the applicant to apply with a different email.`,
           });
+          return;
         }
 
         const existingProfile = await prisma.counselorProfile.findUnique({ where: { userId: user.id } });

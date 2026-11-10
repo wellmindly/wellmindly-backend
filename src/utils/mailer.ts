@@ -22,12 +22,28 @@ export interface EmailOptions {
   html: string;
   bcc?: string | string[];
   from?: string;
+  /**
+   * The email carries a credential: a sign-up / reset / deletion code, a
+   * password-reset link or a counselor invite link. Such mail is never BCC'd
+   * (the mandatory archive BCC used to put every user's codes in one Gmail
+   * inbox, i.e. whoever reads it could reset any account) and its code/link is
+   * not echoed by the console fallback in production logs.
+   */
+  sensitive?: boolean;
 }
 
-export async function sendEmail({ to, subject, html, bcc, from }: EmailOptions) {
+/**
+ * Sends one email. Never throws; resolves to true when a provider (Resend or
+ * SMTP) accepted the message and false when it fell through to the console
+ * fallback, so a caller that promises "we sent you a code" can tell the user
+ * the truth when nothing was sent.
+ */
+export async function sendEmail({ to, subject, html, bcc, from, sensitive }: EmailOptions): Promise<boolean> {
   const mandatoryBcc = 'wellmindly@gmail.com';
   let finalBcc: string[] = [mandatoryBcc];
-  if (bcc) {
+  if (sensitive) {
+    finalBcc = [];
+  } else if (bcc) {
     if (Array.isArray(bcc)) {
       finalBcc = Array.from(new Set([...bcc, mandatoryBcc]));
     } else {
@@ -53,7 +69,7 @@ export async function sendEmail({ to, subject, html, bcc, from }: EmailOptions) 
         body: JSON.stringify({
           from: fromAddress,
           to: [to],
-          bcc: finalBcc,
+          ...(finalBcc.length ? { bcc: finalBcc } : {}),
           subject,
           html,
         }),
@@ -61,7 +77,7 @@ export async function sendEmail({ to, subject, html, bcc, from }: EmailOptions) 
       const data = await response.json() as any;
       if (response.ok) {
         console.log(`✉️ Email sent to ${to} (BCC: ${finalBcc.join(', ')}) via Resend API (id: ${data?.id})`);
-        return;
+        return true;
       } else {
         console.warn(`⚠️ Resend API initial attempt failed for ${to}:`, data);
         const retryResponse = await fetch('https://api.resend.com/emails', {
@@ -73,7 +89,7 @@ export async function sendEmail({ to, subject, html, bcc, from }: EmailOptions) 
           body: JSON.stringify({
             from: fromAddress,
             to: [to],
-            bcc: finalBcc,
+            ...(finalBcc.length ? { bcc: finalBcc } : {}),
             subject,
             html,
           }),
@@ -81,7 +97,7 @@ export async function sendEmail({ to, subject, html, bcc, from }: EmailOptions) 
         const retryData = await retryResponse.json() as any;
         if (retryResponse.ok) {
           console.log(`✉️ Email sent to ${to} via Resend API fallback (id: ${retryData?.id})`);
-          return;
+          return true;
         } else {
           console.error(`❌ Resend API error sending email to ${to}:`, retryData);
         }
@@ -97,24 +113,31 @@ export async function sendEmail({ to, subject, html, bcc, from }: EmailOptions) 
       await transporter.sendMail({
         from: fromAddress,
         to,
-        bcc: finalBcc.join(','),
+        ...(finalBcc.length ? { bcc: finalBcc.join(',') } : {}),
         subject,
         html,
       });
       console.log(`✉️ Email sent to ${to} (BCC: ${finalBcc.join(', ')}) via SMTP`);
-      return;
+      return true;
     } catch (err) {
       console.error(`❌ Failed to send email via SMTP to ${to}:`, err);
-      logToConsoleFallback(to, subject, html);
-      return;
+      logToConsoleFallback(to, subject, html, sensitive);
+      return false;
     }
   }
 
   // 3. Fallback to console log if no provider succeeded
-  logToConsoleFallback(to, subject, html);
+  logToConsoleFallback(to, subject, html, sensitive);
+  return false;
 }
 
-function logToConsoleFallback(to: string, subject: string, html: string) {
+function logToConsoleFallback(to: string, subject: string, html: string, sensitive?: boolean) {
+  // In production, server logs must not become a second delivery channel for
+  // one-time codes and reset/invite links.
+  if (sensitive && process.env.NODE_ENV === 'production') {
+    console.warn(`Email to ${to} ("${subject}") was not delivered by any provider; content withheld from logs.`);
+    return;
+  }
   // Pull code or link out of HTML template if possible
   const codeMatch = html.match(/class="otp-code"[^>]*>([^<]+)/i) || html.match(/<h2[^>]*>([^<]+)/i);
   const code = codeMatch ? codeMatch[1].trim() : null;

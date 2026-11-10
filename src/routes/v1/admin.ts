@@ -190,7 +190,7 @@ router.post('/counselors/invite', async (req: AuthenticatedRequest, res: Respons
     lastName?: string;
   };
 
-  if (!email || !firstName || !lastName) {
+  if (!email || !firstName || !lastName || typeof email !== 'string' || typeof firstName !== 'string' || typeof lastName !== 'string') {
     sendError(res, 'INVALID_INPUT', 'Email, firstName, and lastName are required', 400);
     return;
   }
@@ -232,8 +232,9 @@ router.post('/counselors/invite', async (req: AuthenticatedRequest, res: Respons
   const counselorPortalBase = isLocalDev ? (env.COUNSELOR_PORTAL_URL || 'http://localhost:5174') : 'https://counselor.wellmindly.com';
   const setupUrl = `${counselorPortalBase}/setup-profile?token=${token}`;
 
-  await sendEmail({
+  const emailDelivered = await sendEmail({
     to: cleanEmail,
+    sensitive: true,
     subject: 'Invitation to Join WellMindly as a Counselor',
     html: `
       <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1e293b; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 12px;">
@@ -250,7 +251,9 @@ router.post('/counselors/invite', async (req: AuthenticatedRequest, res: Respons
     `,
   });
 
-  console.log(`📧 [Counselor Invite] Setup link generated for ${cleanEmail}: ${setupUrl}`);
+  // The setup URL carries the invite token; it is returned to the admin below
+  // but kept out of server logs and the audit trail.
+  console.log(`📧 [Counselor Invite] Setup link generated for ${cleanEmail}`);
 
   logAuditEvent({
     actorId: req.user?.sub,
@@ -258,10 +261,21 @@ router.post('/counselors/invite', async (req: AuthenticatedRequest, res: Respons
     targetEntity: 'CounselorInvitation',
     targetId: invitation.id,
     ipAddress: req.ip || null,
-    details: { email: cleanEmail, firstName, lastName, setupUrl },
+    details: { email: cleanEmail, firstName, lastName },
   });
 
-  sendSuccess(res, { message: 'Invitation sent successfully', setupUrl, invitation }, 201);
+  sendSuccess(
+    res,
+    {
+      message: emailDelivered
+        ? 'Invitation sent successfully'
+        : 'Invitation created, but the email could not be sent. Share the setup link with the counselor directly.',
+      emailDelivered,
+      setupUrl,
+      invitation,
+    },
+    201
+  );
 });
 
 /**
@@ -269,8 +283,8 @@ router.post('/counselors/invite', async (req: AuthenticatedRequest, res: Respons
  * List all counselors with pagination & status filters
  */
 router.get('/counselors', async (req: AuthenticatedRequest, res: Response) => {
-  const page = parseInt(req.query.page as string) || 1;
-  const limit = parseInt(req.query.limit as string) || 20;
+  const page = Math.max(1, parseInt(req.query.page as string) || 1);
+  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 20));
   const status = req.query.status as string;
 
   const where: any = { deletedAt: null };
@@ -344,7 +358,7 @@ router.put('/counselors/:id/status', async (req: AuthenticatedRequest, res: Resp
   const updated = await prisma.counselorProfile.update({
     where: { id },
     data: { status: status as any },
-    include: { user: true },
+    include: { user: { select: { id: true, email: true, firstName: true, lastName: true, timezone: true } } },
   });
 
   logAuditEvent({
@@ -369,6 +383,11 @@ const getMasterCalendar = async (req: AuthenticatedRequest, res: Response) => {
   const studentId = typeof req.query.studentId === 'string' ? req.query.studentId : undefined;
   const startDate = typeof req.query.startDate === 'string' ? new Date(req.query.startDate) : undefined;
   const endDate = typeof req.query.endDate === 'string' ? new Date(req.query.endDate) : undefined;
+
+  if ((startDate && Number.isNaN(startDate.getTime())) || (endDate && Number.isNaN(endDate.getTime()))) {
+    sendError(res, 'INVALID_INPUT', 'startDate and endDate must be valid dates', 400);
+    return;
+  }
 
   const where: any = { deletedAt: null };
   if (counselorId) where.counselorId = counselorId;

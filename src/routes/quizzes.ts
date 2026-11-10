@@ -92,6 +92,12 @@ router.post(
 
       let quizId = req.body.quizId || req.query.quizId;
       const quizTitle = req.body.quizTitle;
+
+      // Non-string ids/titles used to reach Prisma and come back as a 500.
+      if ((quizId !== undefined && typeof quizId !== 'string') || (quizTitle !== undefined && typeof quizTitle !== 'string')) {
+        res.status(400).json({ error: 'quizId and quizTitle must be strings' });
+        return;
+      }
       const quizCategory = req.body.quizCategory || req.body.category;
       const maxScore = req.body.maxScore;
 
@@ -137,7 +143,9 @@ router.post(
         }
       }
 
-      let overallScore = typeof req.body.overallScore === 'number' ? req.body.overallScore : null;
+      let overallScore = typeof req.body.overallScore === 'number' && Number.isFinite(req.body.overallScore)
+        ? req.body.overallScore
+        : null;
       let classification = req.body.classification;
 
       if (overallScore === null) {
@@ -282,7 +290,7 @@ router.post(
       }
       const { rating, comments } = req.body as { rating?: number; comments?: string };
 
-      if (rating === undefined || rating < 1 || rating > 5) {
+      if (typeof rating !== 'number' || !Number.isInteger(rating) || rating < 1 || rating > 5) {
         res.status(400).json({ error: 'Rating must be an integer between 1 and 5' });
         return;
       }

@@ -40,6 +40,9 @@ export async function uploadToS3(
   folder = 'avatars'
 ): Promise<UploadResult> {
   const safeName = (originalName || `avatar_${Date.now()}.png`).replace(/[^a-zA-Z0-9._-]/g, '_');
+  // The folder becomes part of a filesystem path below, so it must never
+  // carry separators or dots ("../../src" used to be accepted from clients).
+  folder = String(folder || 'avatars').replace(/[^a-zA-Z0-9_-]/g, '') || 'avatars';
   const timestamp = Date.now();
   const key = `${folder}/${timestamp}-${safeName}`;
 

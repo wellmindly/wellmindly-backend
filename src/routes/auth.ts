@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { Router, Request, Response } from 'express';
 import { OAuth2Client, TokenPayload } from 'google-auth-library';
 import prisma from '../lib/prisma';
@@ -123,14 +124,60 @@ router.post('/google/callback', async (req: Request, res: Response) => {
 
   } catch (error: any) {
     console.error('Error in /api/auth/google/callback:', error);
-    res.status(500).json({ error: 'Google authentication failed', details: error?.message || 'Internal server error' });
+    res.status(500).json({ error: 'Google authentication failed' });
   }
 });
 
 interface OtpEntry {
   code: string;
   expiresAt: number;
+  // Wrong guesses against this code so far. A 6-digit code is only safe if the
+  // number of guesses is bounded per code, not just per IP: the reset and
+  // delete endpoints otherwise let a distributed attacker walk the whole code
+  // space inside the expiry window and take over (or erase) any account.
+  attempts?: number;
 }
+
+const MAX_OTP_ATTEMPTS = 5;
+
+function generateOtpCode(): string {
+  return crypto.randomInt(100000, 1000000).toString();
+}
+
+type OtpCheck = 'OK' | 'MISSING' | 'EXPIRED' | 'MISMATCH' | 'LOCKED';
+
+/**
+ * Checks a submitted code against the stored one. Expired codes and codes that
+ * have had MAX_OTP_ATTEMPTS wrong guesses are deleted, so the caller has to
+ * request a fresh code. Does not delete on success; the caller does that once
+ * the protected action has actually happened.
+ */
+function checkOtp(store: Map<string, OtpEntry>, key: string, submitted: unknown): OtpCheck {
+  const entry = store.get(key);
+  if (!entry) return 'MISSING';
+  if (Date.now() > entry.expiresAt) {
+    store.delete(key);
+    return 'EXPIRED';
+  }
+  const candidate = typeof submitted === 'string' ? submitted.trim() : String(submitted ?? '');
+  const a = Buffer.from(candidate);
+  const b = Buffer.from(entry.code);
+  if (a.length === b.length && crypto.timingSafeEqual(a, b)) return 'OK';
+
+  entry.attempts = (entry.attempts ?? 0) + 1;
+  if (entry.attempts >= MAX_OTP_ATTEMPTS) {
+    store.delete(key);
+    return 'LOCKED';
+  }
+  return 'MISMATCH';
+}
+
+const OTP_ERRORS: Record<Exclude<OtpCheck, 'OK'>, string> = {
+  MISSING: 'Please request a verification code first',
+  EXPIRED: 'Verification code has expired',
+  MISMATCH: 'Incorrect verification code',
+  LOCKED: 'Too many incorrect attempts. Please request a new verification code.',
+};
 
 const otpStore = new Map<string, OtpEntry>();
 
@@ -142,7 +189,7 @@ const otpStore = new Map<string, OtpEntry>();
 router.post('/send-otp', async (req: Request, res: Response) => {
   const { email } = req.body as { email?: string };
 
-  if (!email) {
+  if (!email || typeof email !== 'string') {
     res.status(400).json({ error: 'Email is required' });
     return;
   }
@@ -159,18 +206,24 @@ router.post('/send-otp', async (req: Request, res: Response) => {
     return;
   }
 
-  const code = Math.floor(100000 + Math.random() * 900000).toString();
+  const code = generateOtpCode();
   const expiresAt = Date.now() + 5 * 60 * 1000; // 5 minutes expiration
 
   otpStore.set(emailLower, { code, expiresAt });
 
   try {
-    await sendEmail({
+    const delivered = await sendEmail({
       to: emailLower,
-      bcc: 'wellmindly@gmail.com',
+      sensitive: true,
       subject: 'Verify Your Account - WellMindly',
       html: getOtpTemplate(code, 'register'),
     });
+    if (!delivered) {
+      // No provider accepted the mail. Saying "code sent" here left people
+      // waiting for an email that was never going to arrive.
+      res.status(503).json({ error: 'We could not send a verification code right now. Please try again in a few minutes.' });
+      return;
+    }
     res.status(200).json({ message: 'Verification code sent to your email.' });
   } catch (err) {
     console.error('Error sending sign-up OTP:', err);
@@ -186,12 +239,18 @@ router.post('/send-otp', async (req: Request, res: Response) => {
 router.post('/forgot-password', async (req: Request, res: Response) => {
   const { email } = req.body as { email?: string };
 
-  if (!email) {
+  if (!email || typeof email !== 'string') {
     res.status(400).json({ error: 'Email is required' });
     return;
   }
 
   const emailLower = email.toLowerCase().trim();
+
+  // Same answer whether or not the address has an account; "Email address not
+  // found" let anyone test which addresses are registered (for a mental-health
+  // service, that is itself sensitive). The unknown-address branch waits about
+  // as long as a real send so the response time does not give it away either.
+  const genericMessage = 'If an account exists for that email, a password reset code has been sent.';
 
   try {
     const user = await prisma.user.findUnique({
@@ -199,23 +258,29 @@ router.post('/forgot-password', async (req: Request, res: Response) => {
     });
 
     if (!user) {
-      res.status(400).json({ error: 'Email address not found' });
+      await new Promise((resolve) => setTimeout(resolve, 400 + crypto.randomInt(0, 400)));
+      res.status(200).json({ message: genericMessage });
       return;
     }
 
-    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const code = generateOtpCode();
     const expiresAt = Date.now() + 5 * 60 * 1000; // 5 minutes expiration
 
     otpStore.set(emailLower, { code, expiresAt });
 
-    await sendEmail({
+    const delivered = await sendEmail({
       to: emailLower,
-      bcc: 'wellmindly@gmail.com',
+      sensitive: true,
       subject: 'Reset Your Password - WellMindly',
       html: getOtpTemplate(code, 'forgot_password'),
     });
 
-    res.status(200).json({ message: 'Password reset verification code sent.' });
+    if (!delivered) {
+      res.status(503).json({ error: 'We could not send a reset code right now. Please try again in a few minutes.' });
+      return;
+    }
+
+    res.status(200).json({ message: genericMessage });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to process forgot password. Please try again.' });
@@ -230,27 +295,21 @@ router.post('/forgot-password', async (req: Request, res: Response) => {
 router.post('/reset-password', async (req: Request, res: Response) => {
   const { email, otp, newPassword, role } = req.body;
 
-  if (!email || !otp || !newPassword) {
+  if (!email || !otp || !newPassword || typeof email !== 'string') {
     res.status(400).json({ error: 'Email, verification code, and new password are required' });
     return;
   }
 
   const emailLower = email.toLowerCase().trim();
 
-  const storedOtp = otpStore.get(emailLower);
-  if (!storedOtp) {
-    res.status(400).json({ error: 'Please request a verification code first' });
+  if (typeof newPassword !== 'string' || newPassword.length < 8) {
+    res.status(400).json({ error: 'New password must be at least 8 characters long' });
     return;
   }
 
-  if (Date.now() > storedOtp.expiresAt) {
-    otpStore.delete(emailLower);
-    res.status(400).json({ error: 'Verification code has expired' });
-    return;
-  }
-
-  if (storedOtp.code !== otp.trim()) {
-    res.status(400).json({ error: 'Incorrect verification code' });
+  const otpResult = checkOtp(otpStore, emailLower, otp);
+  if (otpResult !== 'OK') {
+    res.status(400).json({ error: OTP_ERRORS[otpResult] });
     return;
   }
 
@@ -355,7 +414,7 @@ router.post('/login', async (req: Request, res: Response) => {
     });
   } catch (err: any) {
     console.error('Login error:', err);
-    res.status(500).json({ error: err.message || 'Authentication error', code: err.code || 'INTERNAL_ERROR' });
+    res.status(500).json({ error: 'Authentication error', code: 'INTERNAL_ERROR' });
   }
 });
 
@@ -372,33 +431,36 @@ router.post('/register', async (req: Request, res: Response) => {
     return;
   }
 
-  const domain = email.split('@')[1];
+  if (typeof email !== 'string' || typeof password !== 'string') {
+    res.status(400).json({ error: 'Invalid email or password' });
+    return;
+  }
+
+  // Stored and looked up lowercased, exactly as /login and /send-otp do. The
+  // raw value used to be saved as typed, so "Alice@Uni.edu" registered fine
+  // and then could never sign in, because /login lowercases before lookup.
+  const emailLower = email.toLowerCase().trim();
+  const domain = emailLower.split('@')[1];
   if (!domain) {
     res.status(400).json({ error: 'Invalid email address' });
     return;
   }
 
+  if (password.length < 8) {
+    res.status(400).json({ error: 'Password must be at least 8 characters long' });
+    return;
+  }
+
   // Validate OTP
-  const storedOtp = otpStore.get(email.toLowerCase());
-  if (!storedOtp) {
-    res.status(400).json({ error: 'Please request a verification code first' });
-    return;
-  }
-
-  if (Date.now() > storedOtp.expiresAt) {
-    otpStore.delete(email.toLowerCase());
-    res.status(400).json({ error: 'Verification code has expired' });
-    return;
-  }
-
-  if (storedOtp.code !== otp.trim()) {
-    res.status(400).json({ error: 'Incorrect verification code' });
+  const otpResult = checkOtp(otpStore, emailLower, otp);
+  if (otpResult !== 'OK') {
+    res.status(400).json({ error: OTP_ERRORS[otpResult] });
     return;
   }
 
   try {
     const existingUser = await prisma.user.findUnique({
-      where: { email },
+      where: { email: emailLower },
     });
 
     if (existingUser) {
@@ -416,7 +478,7 @@ router.post('/register', async (req: Request, res: Response) => {
 
     const user = await prisma.user.create({
       data: {
-        email,
+        email: emailLower,
         passwordHash,
         firstName,
         lastName,
@@ -426,7 +488,7 @@ router.post('/register', async (req: Request, res: Response) => {
     });
 
     // Clear OTP on successful signup
-    otpStore.delete(email.toLowerCase());
+    otpStore.delete(emailLower);
 
     const token = signToken({
       sub: user.id,
@@ -435,7 +497,7 @@ router.post('/register', async (req: Request, res: Response) => {
       universityId: user.universityId,
     });
 
-    const eligibility = await isStudentEligible(email);
+    const eligibility = await isStudentEligible(emailLower);
     const isVerified = eligibility.eligible || (university?.verified ?? false);
 
     res.status(201).json({
@@ -520,7 +582,7 @@ router.get('/me', authenticateJWT, async (req: Request, res: Response) => {
 router.post('/waitlist', async (req: Request, res: Response) => {
   const { email, feature } = req.body as { email?: string; feature?: string };
 
-  if (!email || !feature) {
+  if (!email || !feature || typeof email !== 'string' || typeof feature !== 'string') {
     res.status(400).json({ error: 'Email and feature are required' });
     return;
   }
@@ -585,7 +647,7 @@ async function deleteUserAndAssociatedData(userId: string) {
 router.post('/delete-account/send-otp', async (req: Request, res: Response) => {
   try {
     const { email } = req.body as { email?: string };
-    if (!email) {
+    if (!email || typeof email !== 'string') {
       res.status(400).json({ error: 'Email address is required' });
       return;
     }
@@ -604,17 +666,21 @@ router.post('/delete-account/send-otp', async (req: Request, res: Response) => {
       return;
     }
 
-    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const code = generateOtpCode();
     const expiresAt = Date.now() + 15 * 60 * 1000; // 15 mins
 
     deleteOtpStore.set(emailLower, { code, expiresAt });
 
-    await sendEmail({
+    const delivered = await sendEmail({
       to: emailLower,
-      bcc: 'wellmindly@gmail.com',
+      sensitive: true,
       subject: 'Confirm Account & Data Deletion - WellMindly',
       html: getOtpTemplate(code, 'delete_account'),
     });
+    if (!delivered) {
+      res.status(503).json({ error: 'We could not send a verification code right now. Please try again in a few minutes.' });
+      return;
+    }
 
     res.status(200).json({
       success: true,
@@ -634,27 +700,19 @@ router.post('/delete-account/send-otp', async (req: Request, res: Response) => {
 router.post('/delete-account/confirm', async (req: Request, res: Response) => {
   try {
     const { email, otp } = req.body as { email?: string; otp?: string };
-    if (!email || !otp) {
+    if (!email || !otp || typeof email !== 'string') {
       res.status(400).json({ error: 'Email and verification code are required' });
       return;
     }
 
     const emailLower = email.toLowerCase().trim();
-    const stored = deleteOtpStore.get(emailLower);
-
-    if (!stored) {
-      res.status(400).json({ error: 'Please request a verification code first' });
-      return;
-    }
-
-    if (Date.now() > stored.expiresAt) {
-      deleteOtpStore.delete(emailLower);
-      res.status(400).json({ error: 'Verification code has expired. Please request a new code.' });
-      return;
-    }
-
-    if (stored.code !== otp.trim()) {
-      res.status(400).json({ error: 'Invalid verification code' });
+    const otpResult = checkOtp(deleteOtpStore, emailLower, otp);
+    if (otpResult !== 'OK') {
+      res.status(400).json({
+        error: otpResult === 'EXPIRED'
+          ? 'Verification code has expired. Please request a new code.'
+          : otpResult === 'MISMATCH' ? 'Invalid verification code' : OTP_ERRORS[otpResult],
+      });
       return;
     }
 

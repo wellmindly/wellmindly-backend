@@ -1,7 +1,10 @@
 import { z } from 'zod';
 import dotenv from 'dotenv';
 
-dotenv.config({ override: true });
+// .env wins over the shell by default. Set DOTENV_NO_OVERRIDE=1 to let real
+// environment variables win instead (e.g. to point a local QA run at another
+// database or disable outbound email without editing .env).
+dotenv.config({ override: process.env.DOTENV_NO_OVERRIDE !== '1' });
 
 const envSchema = z.object({
   PORT: z.coerce.number().default(5000),

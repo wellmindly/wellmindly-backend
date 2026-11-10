@@ -6,6 +6,14 @@ import { TalkStatus, ReactionType } from '../generated/prisma/enums';
 
 const router = Router();
 
+const isAdminRole = (role?: string) => role === 'ADMIN' || role === 'SUPER_ADMIN';
+
+// TalkMindly is a student peer-support space. Every route needs a token, and
+// only students (plus admins, who moderate) may use it: a counselor or a
+// university account could otherwise read every peer post and reply.
+// Admin-only routes below still apply their own ADMIN check on top of this.
+router.use(authenticateJWT, authorizeRoles('STUDENT', 'ADMIN', 'SUPER_ADMIN'));
+
 async function moderateBeforeCreate(content: string): Promise<{
   status: TalkStatus;
   moderationReason: string | null;
@@ -102,7 +110,11 @@ router.delete('/rooms/:id', authenticateJWT, authorizeRoles('ADMIN'), async (req
       where: { id: id as string },
     });
     res.status(200).json({ success: true });
-  } catch (err) {
+  } catch (err: any) {
+    if (err?.code === 'P2025') {
+      res.status(404).json({ error: 'Room not found' });
+      return;
+    }
     console.error('Error deleting room:', err);
     res.status(500).json({ error: 'Failed to delete room' });
   }
@@ -155,6 +167,16 @@ router.post('/profile', authenticateJWT, async (req: Request, res: Response) => 
       acceptTerms?: boolean;
     };
 
+    if (
+      (nickname !== undefined && typeof nickname !== 'string') ||
+      (avatar !== undefined && typeof avatar !== 'string') ||
+      (bio !== undefined && bio !== null && typeof bio !== 'string') ||
+      (acceptTerms !== undefined && typeof acceptTerms !== 'boolean')
+    ) {
+      res.status(400).json({ error: 'Invalid profile fields' });
+      return;
+    }
+
     const user = await prisma.user.findUnique({ where: { id: userId } });
     if (!user) {
       res.status(404).json({ error: 'User not found' });
@@ -176,7 +198,7 @@ router.post('/profile', authenticateJWT, async (req: Request, res: Response) => 
     if (bio !== undefined) updateData.talkBio = bio;
 
     if (nickname) {
-      if (user.talkNickname && req.user?.role !== 'ADMIN') {
+      if (user.talkNickname && !isAdminRole(req.user?.role)) {
         res.status(400).json({ error: 'Nickname can only be set once' });
         return;
       }
@@ -184,7 +206,7 @@ router.post('/profile', authenticateJWT, async (req: Request, res: Response) => 
     }
 
     if (avatar) {
-      if (user.talkAvatar && req.user?.role !== 'ADMIN') {
+      if (user.talkAvatar && !isAdminRole(req.user?.role)) {
         res.status(400).json({ error: 'Avatar can only be set once' });
         return;
       }
@@ -289,8 +311,10 @@ router.delete(
 // GET /rooms/:roomId/notes - Fetch paginated room notes
 router.get('/rooms/:roomId/notes', authenticateJWT, async (req: Request, res: Response) => {
   try {
-    const page = parseInt(req.query.page as string || '1', 10);
-    const limit = parseInt(req.query.limit as string || '30', 10);
+    // Clamped: limit=100000 used to pull every note, reply and reaction in the
+    // room in one query, and a non-numeric page produced NaN and a 500.
+    const page = Math.max(1, parseInt(req.query.page as string || '1', 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string || '30', 10) || 30));
     const skip = (page - 1) * limit;
     const userId = req.user?.sub;
     const sort = req.query.sort as string || 'recent';
@@ -427,6 +451,14 @@ router.post('/rooms/:roomId/notes', authenticateJWT, async (req: Request, res: R
       return;
     }
 
+    // Checked before moderation (which is a paid AI call) and before the
+    // insert, where an unknown room used to surface as a 500 from the FK.
+    const room = await prisma.talkRoom.findUnique({ where: { id: req.params.roomId as string } });
+    if (!room || !room.isActive) {
+      res.status(404).json({ error: 'Room not found' });
+      return;
+    }
+
     // Moderate before create
     const moderation = await moderateBeforeCreate(content);
 
@@ -555,6 +587,14 @@ router.post('/notes/:noteId/replies', authenticateJWT, async (req: Request, res:
       return;
     }
 
+    // Only a visible note can be replied to: an approved one, or the replier's
+    // own pending/flagged note. Unknown ids used to 500 on the FK.
+    const parentNote = await prisma.talkNote.findUnique({ where: { id: req.params.noteId as string } });
+    if (!parentNote || (parentNote.status !== TalkStatus.APPROVED && parentNote.userId !== userId)) {
+      res.status(404).json({ error: 'Note not found' });
+      return;
+    }
+
     // Moderate before create
     const moderation = await moderateBeforeCreate(content);
 
@@ -633,6 +673,12 @@ router.post('/notes/:noteId/react', authenticateJWT, async (req: Request, res: R
     }
 
     const reactionType = type as ReactionType;
+
+    const targetNote = await prisma.talkNote.findUnique({ where: { id: req.params.noteId as string } });
+    if (!targetNote || (targetNote.status !== TalkStatus.APPROVED && targetNote.userId !== userId)) {
+      res.status(404).json({ error: 'Note not found' });
+      return;
+    }
 
     // Check if user already reacted with this type
     const existing = await prisma.talkReaction.findUnique({
@@ -787,7 +833,7 @@ router.delete('/notes/:noteId', authenticateJWT, async (req: Request, res: Respo
       return;
     }
 
-    if (note.userId !== userId && userRole !== 'ADMIN') {
+    if (note.userId !== userId && !isAdminRole(userRole)) {
       res.status(403).json({ error: 'Unauthorized to delete this note' });
       return;
     }
@@ -822,7 +868,7 @@ router.delete('/replies/:replyId', authenticateJWT, async (req: Request, res: Re
       return;
     }
 
-    if (reply.userId !== userId && userRole !== 'ADMIN') {
+    if (reply.userId !== userId && !isAdminRole(userRole)) {
       res.status(403).json({ error: 'Unauthorized to delete this reply' });
       return;
     }
