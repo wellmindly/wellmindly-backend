@@ -783,7 +783,8 @@ async function deleteUserAndAssociatedData(userId: string) {
     select: { appleId: true, appleRefreshToken: true },
   });
   if (appleUser?.appleId && appleUser.appleRefreshToken) {
-    await revokeAppleToken(appleUser.appleRefreshToken);
+    const revoked = await revokeAppleToken(appleUser.appleRefreshToken);
+    if (!revoked) console.warn(`Apple token revocation did not succeed for user ${userId}`);
   }
 
   // 1. Delete student counselor sessions
