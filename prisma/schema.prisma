@@ -51,6 +51,7 @@ model User {
   deletedAt         DateTime?
   googleId          String?  @unique
   appleId           String?  @unique
+  appleRefreshToken String?
   universityId      String?
   university        University? @relation(fields: [universityId], references: [id])
   quizResults       QuizResult[]

@@ -8,6 +8,7 @@ import { sendEmail, getOtpTemplate, getAccountDeletedTemplate } from '../utils/m
 import { authenticateJWT } from '../utils/jwt';
 import { isStudentEligible } from '../services/accessControl';
 import { verifyAppleIdentityToken } from '../lib/appleAuth';
+import { exchangeAppleAuthCode, revokeAppleToken } from '../lib/appleRevoke';
 
 const router = Router();
 const googleClient = new OAuth2Client(env.GOOGLE_CLIENT_ID);
@@ -154,8 +155,9 @@ const cleanName = (v: unknown): string => (typeof v === 'string' ? v.trim().slic
  */
 router.post('/apple/callback', async (req: Request, res: Response) => {
   try {
-    const { idToken, firstName: bodyFirst, lastName: bodyLast, nonce } = req.body as {
+    const { idToken, firstName: bodyFirst, lastName: bodyLast, nonce, authorizationCode } = req.body as {
       idToken?: string;
+      authorizationCode?: string;
       firstName?: string;
       lastName?: string;
       nonce?: string;
@@ -232,6 +234,19 @@ router.post('/apple/callback', async (req: Request, res: Response) => {
         if (e?.code !== 'P2002') throw e;
         user = await byApple();
         if (!user) throw e;
+      }
+    }
+
+    // Keep a refresh token so Apple can be told to revoke it if the account is deleted.
+    // Best-effort: a failure here never blocks sign-in.
+    if (authorizationCode && typeof authorizationCode === 'string') {
+      const refreshToken = await exchangeAppleAuthCode(authorizationCode);
+      if (refreshToken) {
+        try {
+          await prisma.user.update({ where: { id: user.id }, data: { appleRefreshToken: refreshToken } });
+        } catch (e: any) {
+          console.warn('Could not store Apple refresh token:', e?.message || e);
+        }
       }
     }
 
@@ -762,6 +777,15 @@ router.post('/waitlist', async (req: Request, res: Response) => {
 const deleteOtpStore = new Map<string, OtpEntry>();
 
 async function deleteUserAndAssociatedData(userId: string) {
+  // 0. Revoke the Apple token first (guideline 5.1.1(v)). Best-effort: never blocks deletion.
+  const appleUser = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { appleId: true, appleRefreshToken: true },
+  });
+  if (appleUser?.appleId && appleUser.appleRefreshToken) {
+    await revokeAppleToken(appleUser.appleRefreshToken);
+  }
+
   // 1. Delete student counselor sessions
   await prisma.counselorSession.deleteMany({
     where: { studentId: userId },
