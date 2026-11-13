@@ -7,6 +7,7 @@ import { env } from '../config/env';
 import { sendEmail, getOtpTemplate, getAccountDeletedTemplate } from '../utils/mailer';
 import { authenticateJWT } from '../utils/jwt';
 import { isStudentEligible } from '../services/accessControl';
+import { verifyAppleIdentityToken } from '../lib/appleAuth';
 
 const router = Router();
 const googleClient = new OAuth2Client(env.GOOGLE_CLIENT_ID);
@@ -125,6 +126,132 @@ router.post('/google/callback', async (req: Request, res: Response) => {
   } catch (error: any) {
     console.error('Error in /api/auth/google/callback:', error);
     res.status(500).json({ error: 'Google authentication failed' });
+  }
+});
+
+const appleAudiences = Array.from(
+  new Set(
+    [env.APPLE_BUNDLE_ID, ...(env.APPLE_CLIENT_IDS || '').split(',')]
+      .map((id) => (id || '').trim())
+      .filter(Boolean)
+  )
+);
+
+const cleanName = (v: unknown): string => (typeof v === 'string' ? v.trim().slice(0, 100) : '');
+
+/**
+ * POST /api/auth/apple/callback
+ *
+ * Accepts an Apple identity token from the iOS app (Sign in with Apple),
+ * verifies it against Apple's JWKS (issuer + audience = bundle ID), then signs
+ * the user in or creates them, like the Google flow.
+ *
+ * Apple only returns the user's name on the very first authorization and may
+ * omit the email on later ones, so the client sends the name along and we match
+ * returning users by the stable Apple `sub` first.
+ *
+ * Body: { idToken: string, firstName?: string, lastName?: string, nonce?: string }
+ */
+router.post('/apple/callback', async (req: Request, res: Response) => {
+  try {
+    const { idToken, firstName: bodyFirst, lastName: bodyLast, nonce } = req.body as {
+      idToken?: string;
+      firstName?: string;
+      lastName?: string;
+      nonce?: string;
+    };
+
+    if (!idToken || typeof idToken !== 'string') {
+      res.status(400).json({ error: 'idToken is required' });
+      return;
+    }
+
+    let identity;
+    try {
+      identity = await verifyAppleIdentityToken(
+        idToken,
+        appleAudiences,
+        typeof nonce === 'string' && nonce ? nonce : undefined
+      );
+    } catch (err: any) {
+      console.warn('Apple identity token verification failed:', err?.message || err);
+      res.status(401).json({ error: 'Invalid or expired Apple token' });
+      return;
+    }
+
+    const emailLower = identity.email ? identity.email.toLowerCase().trim() : '';
+    const firstName = cleanName(bodyFirst);
+    const lastName = cleanName(bodyLast);
+
+    // 1. Returning Apple user (works even when Apple omits the email).
+    let user = await prisma.user.findUnique({ where: { appleId: identity.sub } });
+
+    // 2. Same email already registered (password or Google): link, but only on
+    //    an email Apple says is verified.
+    if (!user && emailLower) {
+      if (!identity.emailVerified) {
+        res.status(401).json({ error: 'Your Apple email address is not verified' });
+        return;
+      }
+      const existing = await prisma.user.findUnique({ where: { email: emailLower } });
+      if (existing) {
+        user = await prisma.user.update({ where: { id: existing.id }, data: { appleId: identity.sub } });
+      }
+    }
+
+    // 3. Brand-new user.
+    if (!user) {
+      if (!emailLower) {
+        res.status(400).json({ error: 'Apple did not share an email address for this account' });
+        return;
+      }
+      const domain = emailLower.split('@')[1];
+      const uni = domain
+        ? await prisma.university.findFirst({ where: { domain: { equals: domain, mode: 'insensitive' } } })
+        : null;
+      user = await prisma.user.create({
+        data: {
+          email: emailLower,
+          appleId: identity.sub,
+          firstName,
+          lastName,
+          role: 'STUDENT',
+          universityId: uni?.id ?? null,
+        },
+      });
+    }
+
+    const university = user.universityId
+      ? await prisma.university.findUnique({ where: { id: user.universityId } })
+      : null;
+
+    const token = signToken({
+      sub: user.id,
+      email: user.email,
+      role: user.role,
+      universityId: user.universityId,
+    });
+
+    const eligibility = await isStudentEligible(user.email);
+    const isVerified = eligibility.eligible || (university?.verified ?? false);
+
+    res.status(200).json({
+      token,
+      user: {
+        id: user.id,
+        email: user.email,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        role: user.role,
+        universityId: user.universityId,
+        universityDomain: university?.domain ?? eligibility.domain ?? null,
+        universityVerified: isVerified,
+      },
+      eligibility,
+    });
+  } catch (error: any) {
+    console.error('Error in /api/auth/apple/callback:', error);
+    res.status(500).json({ error: 'Apple authentication failed' });
   }
 });
 
