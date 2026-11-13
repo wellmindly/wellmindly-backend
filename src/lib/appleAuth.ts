@@ -4,6 +4,7 @@ import jwt from 'jsonwebtoken';
 const APPLE_ISSUER = 'https://appleid.apple.com';
 const APPLE_JWKS_URL = 'https://appleid.apple.com/auth/keys';
 const JWKS_TTL_MS = 60 * 60 * 1000;
+const MIN_REFETCH_MS = 60 * 1000;
 
 interface Jwk {
   kid: string;
@@ -18,7 +19,7 @@ let cache: { keys: Jwk[]; fetchedAt: number } | null = null;
 export type JwksFetcher = () => Promise<Jwk[]>;
 
 async function fetchAppleKeys(): Promise<Jwk[]> {
-  const res = await fetch(APPLE_JWKS_URL);
+  const res = await fetch(APPLE_JWKS_URL, { signal: AbortSignal.timeout(5000) });
   if (!res.ok) throw new Error(`Apple JWKS fetch failed: ${res.status}`);
   const body = (await res.json()) as { keys?: Jwk[] };
   return body.keys ?? [];
@@ -38,7 +39,9 @@ async function getKey(kid: string): Promise<Jwk | undefined> {
     const hit = cache!.keys.find((k) => k.kid === kid);
     if (hit) return hit;
   }
-  // Unknown kid or stale cache: refetch once (handles Apple key rotation).
+  // Unknown kid or stale cache: refetch (handles Apple key rotation), but at
+  // most once a minute so junk `kid` values cannot hammer Apple's endpoint.
+  if (cache && Date.now() - cache.fetchedAt < MIN_REFETCH_MS) return undefined;
   const keys = await fetcher();
   cache = { keys, fetchedAt: Date.now() };
   return keys.find((k) => k.kid === kid);
@@ -59,7 +62,7 @@ export interface AppleIdentity {
 export async function verifyAppleIdentityToken(
   idToken: string,
   audiences: string[],
-  expectedNonce?: string
+  expectedNonce: string
 ): Promise<AppleIdentity> {
   const decoded = jwt.decode(idToken, { complete: true });
   const kid = decoded && typeof decoded === 'object' ? (decoded.header as any)?.kid : undefined;
@@ -77,12 +80,13 @@ export async function verifyAppleIdentityToken(
 
   if (!payload.sub) throw new Error('Apple token has no subject');
 
-  if (expectedNonce) {
-    // Apple embeds the nonce as given by the client, or its SHA-256 hex digest.
-    const hashed = crypto.createHash('sha256').update(expectedNonce).digest('hex');
-    if (payload.nonce !== expectedNonce && payload.nonce !== hashed) {
-      throw new Error('Apple token nonce mismatch');
-    }
+  // The nonce is mandatory: it binds the token to this sign-in attempt, so a
+  // captured token cannot simply be replayed. Apple embeds the nonce as given
+  // by the client, or its SHA-256 hex digest.
+  if (!expectedNonce) throw new Error('Apple sign-in nonce is required');
+  const hashed = crypto.createHash('sha256').update(expectedNonce).digest('hex');
+  if (payload.nonce !== expectedNonce && payload.nonce !== hashed) {
+    throw new Error('Apple token nonce mismatch');
   }
 
   return {

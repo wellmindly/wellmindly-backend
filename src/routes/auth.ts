@@ -166,13 +166,14 @@ router.post('/apple/callback', async (req: Request, res: Response) => {
       return;
     }
 
+    if (!nonce || typeof nonce !== 'string') {
+      res.status(400).json({ error: 'nonce is required' });
+      return;
+    }
+
     let identity;
     try {
-      identity = await verifyAppleIdentityToken(
-        idToken,
-        appleAudiences,
-        typeof nonce === 'string' && nonce ? nonce : undefined
-      );
+      identity = await verifyAppleIdentityToken(idToken, appleAudiences, nonce);
     } catch (err: any) {
       console.warn('Apple identity token verification failed:', err?.message || err);
       res.status(401).json({ error: 'Invalid or expired Apple token' });
@@ -184,7 +185,8 @@ router.post('/apple/callback', async (req: Request, res: Response) => {
     const lastName = cleanName(bodyLast);
 
     // 1. Returning Apple user (works even when Apple omits the email).
-    let user = await prisma.user.findUnique({ where: { appleId: identity.sub } });
+    const byApple = () => prisma.user.findUnique({ where: { appleId: identity.sub } });
+    let user = await byApple();
 
     // 2. Same email already registered (password or Google): link, but only on
     //    an email Apple says is verified.
@@ -195,6 +197,11 @@ router.post('/apple/callback', async (req: Request, res: Response) => {
       }
       const existing = await prisma.user.findUnique({ where: { email: emailLower } });
       if (existing) {
+        // Never displace a different Apple identity already bound to this account.
+        if (existing.appleId && existing.appleId !== identity.sub) {
+          res.status(409).json({ error: 'This email is already linked to a different Apple account' });
+          return;
+        }
         user = await prisma.user.update({ where: { id: existing.id }, data: { appleId: identity.sub } });
       }
     }
@@ -209,16 +216,23 @@ router.post('/apple/callback', async (req: Request, res: Response) => {
       const uni = domain
         ? await prisma.university.findFirst({ where: { domain: { equals: domain, mode: 'insensitive' } } })
         : null;
-      user = await prisma.user.create({
-        data: {
-          email: emailLower,
-          appleId: identity.sub,
-          firstName,
-          lastName,
-          role: 'STUDENT',
-          universityId: uni?.id ?? null,
-        },
-      });
+      try {
+        user = await prisma.user.create({
+          data: {
+            email: emailLower,
+            appleId: identity.sub,
+            firstName,
+            lastName,
+            role: 'STUDENT',
+            universityId: uni?.id ?? null,
+          },
+        });
+      } catch (e: any) {
+        // A concurrent first sign-in (double tap, retry) created the row first.
+        if (e?.code !== 'P2002') throw e;
+        user = await byApple();
+        if (!user) throw e;
+      }
     }
 
     const university = user.universityId

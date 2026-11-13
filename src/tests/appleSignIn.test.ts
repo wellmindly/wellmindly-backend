@@ -37,7 +37,7 @@ let jwk: any;
 
 function sign(claims: Record<string, any>, opts: { key?: crypto.KeyObject; kid?: string } = {}) {
   return jwt.sign(
-    { iss: 'https://appleid.apple.com', aud: BUNDLE, sub: 'apple-sub-1', email: 'stu@uni.edu', email_verified: 'true', ...claims },
+    { iss: 'https://appleid.apple.com', aud: BUNDLE, sub: 'apple-sub-1', email: 'stu@uni.edu', email_verified: 'true', nonce: 'n1', ...claims },
     opts.key ?? privateKey,
     { algorithm: 'RS256', keyid: opts.kid ?? 'kid1', expiresIn: '5m', noTimestamp: false }
   );
@@ -67,10 +67,39 @@ describe('POST /api/auth/apple/callback', () => {
     m.uniUnique.mockResolvedValue(null);
   });
 
-  const post = (body: any) => request(app).post('/api/auth/apple/callback').send(body);
+  const post = (body: any) =>
+    request(app)
+      .post('/api/auth/apple/callback')
+      .send({ nonce: 'n1', ...body });
 
   it('400 without idToken', async () => {
     expect((await post({})).status).toBe(400);
+  });
+
+  it('400 without a nonce', async () => {
+    const res = await request(app).post('/api/auth/apple/callback').send({ idToken: sign({}) });
+    expect(res.status).toBe(400);
+    expect(m.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('rejects a token that carries no nonce claim (replay protection)', async () => {
+    const res = await post({ idToken: sign({ nonce: undefined }) });
+    expect(res.status).toBe(401);
+    expect(m.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('409 when the email is already bound to a different Apple account', async () => {
+    m.findUnique.mockResolvedValueOnce(null).mockResolvedValueOnce({ ...baseUser, appleId: 'someone-else' });
+    const res = await post({ idToken: sign({}) });
+    expect(res.status).toBe(409);
+    expect(m.update).not.toHaveBeenCalled();
+  });
+
+  it('recovers when a concurrent first sign-in already created the user (P2002)', async () => {
+    m.findUnique.mockResolvedValueOnce(null).mockResolvedValueOnce(null).mockResolvedValueOnce({ ...baseUser });
+    m.create.mockRejectedValue(Object.assign(new Error('unique'), { code: 'P2002' }));
+    const res = await post({ idToken: sign({}) });
+    expect(res.status).toBe(200);
   });
 
   it('rejects a token signed with a key that is not Apple\'s', async () => {
@@ -90,7 +119,7 @@ describe('POST /api/auth/apple/callback', () => {
 
   it('rejects an expired token', async () => {
     const t = jwt.sign(
-      { iss: 'https://appleid.apple.com', aud: BUNDLE, sub: 's', email: 'a@b.c', exp: Math.floor(Date.now() / 1000) - 60 },
+      { iss: 'https://appleid.apple.com', aud: BUNDLE, sub: 's', email: 'a@b.c', nonce: 'n1', exp: Math.floor(Date.now() / 1000) - 60 },
       privateKey,
       { algorithm: 'RS256', keyid: 'kid1' }
     );
