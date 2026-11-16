@@ -29,6 +29,10 @@ const pool = new Pool({
 });
 const adapter = new PrismaPg(pool);
 
-const prisma = new PrismaClient({ adapter });
+// The Apple refresh token is a credential: never return it unless a query opts in
+// with `select: { appleRefreshToken: true }` (see deleteUserAndAssociatedData).
+export const prismaClientOptions = { omit: { user: { appleRefreshToken: true } } } as const;
+
+const prisma = new PrismaClient({ adapter, ...prismaClientOptions });
 
 export default prisma;

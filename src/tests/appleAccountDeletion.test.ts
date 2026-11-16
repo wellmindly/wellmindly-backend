@@ -31,7 +31,7 @@ vi.mock('../lib/prisma', () => ({
 
 vi.mock('../lib/appleRevoke', () => ({
   revokeAppleToken: (t: string) => m.revoke(t),
-  exchangeAppleAuthCode: (c: string) => m.exchange(c),
+  exchangeAppleAuthCode: (c: string, s?: string) => m.exchange(c, s),
 }));
 
 vi.mock('../utils/mailer', async (orig) => ({
@@ -116,7 +116,7 @@ describe('POST /api/auth/apple/callback: storing the refresh token', () => {
     m.exchange.mockResolvedValue('rt-9');
     const res = await request(app).post('/api/auth/apple/callback').send({ idToken: idToken(), nonce: 'n1', authorizationCode: 'code-1' });
     expect(res.status).toBe(200);
-    expect(m.exchange).toHaveBeenCalledWith('code-1');
+    expect(m.exchange).toHaveBeenCalledWith('code-1', 'sub-1');
     expect(m.update).toHaveBeenCalledWith({ where: { id: 'u1' }, data: { appleRefreshToken: 'rt-9' } });
   });
 

@@ -50,7 +50,7 @@ async function postForm(url: string, params: Record<string, string>): Promise<Re
  * token. Returns null when revocation is not configured or the exchange fails
  * (sign-in must never fail because of this).
  */
-export async function exchangeAppleAuthCode(code: string): Promise<string | null> {
+export async function exchangeAppleAuthCode(code: string, expectedSub?: string): Promise<string | null> {
   const cfg = getAppleRevokeConfig();
   if (!cfg) return null;
   try {
@@ -64,7 +64,17 @@ export async function exchangeAppleAuthCode(code: string): Promise<string | null
       console.warn('Apple authorization code exchange failed:', res.status);
       return null;
     }
-    const body = (await res.json()) as { refresh_token?: string };
+    const body = (await res.json()) as { refresh_token?: string; id_token?: string };
+    if (expectedSub) {
+      // The code must belong to the Apple user we just verified, or we'd store a
+      // token that revokes someone else's grant. This is Apple's own response, so decode only.
+      const claims = typeof body.id_token === 'string' ? jwt.decode(body.id_token) : null;
+      const sub = claims && typeof claims === 'object' ? claims.sub : undefined;
+      if (sub !== expectedSub) {
+        console.warn('Apple authorization code does not match the signed-in Apple user; token not stored');
+        return null;
+      }
+    }
     return typeof body.refresh_token === 'string' ? body.refresh_token : null;
   } catch (err: any) {
     console.warn('Apple authorization code exchange error:', err?.message || err);

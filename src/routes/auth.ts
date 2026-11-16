@@ -240,7 +240,7 @@ router.post('/apple/callback', async (req: Request, res: Response) => {
     // Keep a refresh token so Apple can be told to revoke it if the account is deleted.
     // Best-effort: a failure here never blocks sign-in.
     if (authorizationCode && typeof authorizationCode === 'string') {
-      const refreshToken = await exchangeAppleAuthCode(authorizationCode);
+      const refreshToken = await exchangeAppleAuthCode(authorizationCode, identity.sub);
       if (refreshToken) {
         try {
           await prisma.user.update({ where: { id: user.id }, data: { appleRefreshToken: refreshToken } });

@@ -121,4 +121,26 @@ describe('Apple token revocation', () => {
     fetchMock.mockRejectedValueOnce(new Error('timeout'));
     expect(await revokeAppleToken('rt')).toBe(false);
   });
+
+  describe('sub binding', () => {
+    const idTokenFor = (sub: string) => jwt.sign({ sub }, 'irrelevant', { algorithm: 'HS256' });
+
+    it('returns the refresh token when the id_token sub matches the verified user', async () => {
+      configure();
+      fetchMock.mockResolvedValue({ ok: true, json: async () => ({ refresh_token: 'rt', id_token: idTokenFor('sub-1') }) });
+      expect(await exchangeAppleAuthCode('c', 'sub-1')).toBe('rt');
+    });
+
+    it('returns null when the id_token sub differs', async () => {
+      configure();
+      fetchMock.mockResolvedValue({ ok: true, json: async () => ({ refresh_token: 'rt', id_token: idTokenFor('other') }) });
+      expect(await exchangeAppleAuthCode('c', 'sub-1')).toBeNull();
+    });
+
+    it('returns null when id_token is missing and a sub is expected', async () => {
+      configure();
+      fetchMock.mockResolvedValue({ ok: true, json: async () => ({ refresh_token: 'rt' }) });
+      expect(await exchangeAppleAuthCode('c', 'sub-1')).toBeNull();
+    });
+  });
 });

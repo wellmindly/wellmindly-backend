@@ -220,7 +220,7 @@ router.get(
         where: { id: studentId, role: 'STUDENT', deletedAt: null },
         // The admin view has no use for credentials; `include` alone returned
         // passwordHash and googleId with every profile.
-        omit: { passwordHash: true, googleId: true },
+        omit: { passwordHash: true, googleId: true, appleId: true, appleRefreshToken: true },
         include: {
           university: {
             select: {
