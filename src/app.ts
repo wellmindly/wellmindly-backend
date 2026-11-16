@@ -15,6 +15,7 @@ import talkRouter from './routes/talk';
 import v1AdminRouter from './routes/v1/admin';
 import v1CounselorsRouter from './routes/v1/counselors';
 import v1StudentsRouter from './routes/v1/students';
+import { cloudfrontClientIp } from './middleware/cloudfrontClientIp';
 import { startReminderScheduler } from './utils/reminderService';
 import { ensureContactRequestSchema } from './services/contactSchema';
 
@@ -27,12 +28,16 @@ const app = express();
 // differs between single-instance and load-balanced environments. 'loopback, uniquelocal'
 // trusts nginx and the ALB's private VPC address, and stops at the first public address,
 // so a client cannot spoof its way past it. `true` would trust the whole chain.
-// If CloudFront sits in front, set TRUST_PROXY to a list that also includes its ranges.
+// CloudFront is in front (verified 16 Nov 2026): cloudfrontClientIp (below) takes the viewer
+// address CloudFront appended, so no TRUST_PROXY change is needed on EB.
 // An empty TRUST_PROXY falls back to the default.
 export const DEFAULT_TRUST_PROXY = 'loopback, uniquelocal';
 const trustProxyEnv = process.env.TRUST_PROXY?.trim() || DEFAULT_TRUST_PROXY;
 // Express treats a string as an IP/subnet list; a hop count must be a real number.
 app.set('trust proxy', /^\d+$/.test(trustProxyEnv) ? Number(trustProxyEnv) : trustProxyEnv);
+
+// api.wellmindly.com is behind CloudFront: resolve the real viewer IP (see the middleware).
+app.use(cloudfrontClientIp);
 
 // Secure security headers - allow cross-origin resource embedding for public assets/avatars
 app.use(

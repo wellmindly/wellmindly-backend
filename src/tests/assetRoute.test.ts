@@ -13,6 +13,7 @@ vi.mock('../utils/s3', async (importOriginal) => ({
 
 import express from 'express';
 import app from '../app';
+import { cloudfrontClientIp, resolveCloudFrontClient } from '../middleware/cloudfrontClientIp';
 import { getClientIp } from '../middleware/waitlistProtection';
 
 let server: http.Server;
@@ -86,6 +87,7 @@ describe('trust proxy', () => {
   beforeAll(async () => {
     const probe = express();
     probe.set('trust proxy', app.get('trust proxy'));
+    probe.use(cloudfrontClientIp);
     probe.get('/ip', (req, res) => {
       res.json({ ip: req.ip, clientIp: getClientIp(req) });
     });
@@ -98,11 +100,16 @@ describe('trust proxy', () => {
     await new Promise((resolve) => echo.close(resolve));
   });
 
-  function ipFor(xff?: string): Promise<{ ip: string; clientIp: string }> {
+  function ipFor(xff?: string, extra: Record<string, string> = {}): Promise<{ ip: string; clientIp: string }> {
     return new Promise((resolve, reject) => {
       http
         .get(
-          { host: '127.0.0.1', port: echoPort, path: '/ip', headers: xff ? { 'X-Forwarded-For': xff } : {} },
+          {
+            host: '127.0.0.1',
+            port: echoPort,
+            path: '/ip',
+            headers: { ...(xff ? { 'X-Forwarded-For': xff } : {}), ...extra },
+          },
           (res) => {
             let data = '';
             res.on('data', (c) => (data += c));
@@ -131,5 +138,35 @@ describe('trust proxy', () => {
 
   it('does not trust a public address as a proxy', async () => {
     expect((await ipFor('6.6.6.6, 198.51.100.7')).ip).toBe('198.51.100.7');
+  });
+
+  describe('behind CloudFront', () => {
+    const cf = { 'X-Amz-Cf-Id': 'abc123==' };
+
+    it('uses the viewer CloudFront appended, not the edge IP', async () => {
+      // viewer, CloudFront edge (appended by the ALB), ALB (appended by nginx)
+      const r = await ipFor('203.0.113.9, 130.176.1.1, 10.0.1.5', cf);
+      expect(r.ip).toBe('203.0.113.9');
+      expect(r.clientIp).toBe('203.0.113.9');
+    });
+
+    it('ignores spoofed entries to the left of the viewer', async () => {
+      expect((await ipFor('6.6.6.6, 203.0.113.9, 130.176.1.1, 10.0.1.5', cf)).ip).toBe('203.0.113.9');
+    });
+
+    it('two viewers behind the same edge get different IPs', async () => {
+      const a = await ipFor('203.0.113.9, 130.176.1.1, 10.0.1.5', cf);
+      const b = await ipFor('203.0.113.10, 130.176.1.1, 10.0.1.5', cf);
+      expect(a.ip).not.toBe(b.ip);
+    });
+
+    it('without X-Amz-Cf-Id behaves as before', async () => {
+      expect((await ipFor('203.0.113.9, 130.176.1.1, 10.0.1.5')).ip).toBe('130.176.1.1');
+    });
+
+    it('rejects a non-IP entry', () => {
+      expect(resolveCloudFrontClient('130.176.1.1', 'evil, 130.176.1.1', true)).toBeUndefined();
+      expect(resolveCloudFrontClient('130.176.1.1', '130.176.1.1', true)).toBeUndefined();
+    });
   });
 });
