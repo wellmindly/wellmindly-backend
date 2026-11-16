@@ -1,4 +1,5 @@
 import fs from 'fs';
+import { pipeline } from 'stream';
 import path from 'path';
 import { Router, Request, Response } from 'express';
 import bcrypt from 'bcrypt';
@@ -510,13 +511,13 @@ router.get('/assets/:folder/:filename', async (req: Request, res: Response) => {
           // run script. Unknown types go out as an opaque download.
           res.setHeader('Content-Type', mimeMap[ext] || 'application/octet-stream');
           res.setHeader('Cache-Control', 'public, max-age=86400');
-          const stream = fs.createReadStream(localPath);
-          stream.on('error', (e) => {
+          // pipeline closes the file if the client disconnects early.
+          return pipeline(fs.createReadStream(localPath), res, (e) => {
+            if (!e) return;
             console.error('Asset stream error:', e);
             if (!res.headersSent) res.status(500).send('Failed to read asset');
             else res.destroy();
           });
-          return stream.pipe(res);
         }
       }
     }
@@ -532,12 +533,12 @@ router.get('/assets/:folder/:filename', async (req: Request, res: Response) => {
         res.setHeader('Cache-Control', 'public, max-age=86400'); // Cache for 24h
 
         if (typeof s3Obj.body.pipe === 'function') {
-          s3Obj.body.on?.('error', (e: unknown) => {
+          return pipeline(s3Obj.body, res, (e) => {
+            if (!e) return;
             console.error('S3 asset stream error:', e);
             if (!res.headersSent) res.status(500).send('Failed to read asset');
             else res.destroy();
           });
-          return s3Obj.body.pipe(res);
         } else {
           const bytes = await s3Obj.body.transformToByteArray();
           return res.send(Buffer.from(bytes));

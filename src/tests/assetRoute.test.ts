@@ -4,7 +4,9 @@ import type { AddressInfo } from 'net';
 
 vi.mock('../lib/prisma', () => ({ default: {} }));
 
+import express from 'express';
 import app from '../app';
+import { getClientIp } from '../middleware/waitlistProtection';
 
 let server: http.Server;
 let port: number;
@@ -48,7 +50,57 @@ describe('counselor asset route hardening', () => {
 });
 
 describe('trust proxy', () => {
-  it('trusts a single hop, not the whole X-Forwarded-For chain', () => {
-    expect(app.get('trust proxy')).toBe(1);
+  // Tiny server using the real app's trust-proxy setting; echoes req.ip and getClientIp.
+  let echo: http.Server;
+  let echoPort: number;
+
+  beforeAll(async () => {
+    const probe = express();
+    probe.set('trust proxy', app.get('trust proxy'));
+    probe.get('/ip', (req, res) => {
+      res.json({ ip: req.ip, clientIp: getClientIp(req) });
+    });
+    echo = http.createServer(probe);
+    await new Promise<void>((resolve) => echo.listen(0, '127.0.0.1', resolve));
+    echoPort = (echo.address() as AddressInfo).port;
+  });
+
+  afterAll(async () => {
+    await new Promise((resolve) => echo.close(resolve));
+  });
+
+  function ipFor(xff?: string): Promise<{ ip: string; clientIp: string }> {
+    return new Promise((resolve, reject) => {
+      http
+        .get(
+          { host: '127.0.0.1', port: echoPort, path: '/ip', headers: xff ? { 'X-Forwarded-For': xff } : {} },
+          (res) => {
+            let data = '';
+            res.on('data', (c) => (data += c));
+            res.on('end', () => resolve(JSON.parse(data)));
+          }
+        )
+        .on('error', reject);
+    });
+  }
+
+  it('resolves the real client behind nginx (loopback) and the ALB (private IP)', async () => {
+    // nginx appends the ALB's private IP; the ALB appended the client's public IP.
+    expect((await ipFor('203.0.113.9, 10.0.1.5')).ip).toBe('203.0.113.9');
+  });
+
+  it('works without an ALB (client, then nginx only)', async () => {
+    expect((await ipFor('203.0.113.9')).ip).toBe('203.0.113.9');
+  });
+
+  it('ignores a spoofed leftmost X-Forwarded-For entry', async () => {
+    const r = await ipFor('6.6.6.6, 203.0.113.9, 10.0.1.5');
+    expect(r.ip).toBe('203.0.113.9');
+    // waitlist bot protection must use the same trusted value, not the leftmost entry
+    expect(r.clientIp).toBe('203.0.113.9');
+  });
+
+  it('does not trust a public address as a proxy', async () => {
+    expect((await ipFor('6.6.6.6, 198.51.100.7')).ip).toBe('198.51.100.7');
   });
 });
