@@ -59,13 +59,8 @@ export function isValidEmailSyntax(email: string): boolean {
  * Extracts client IP respecting reverse proxies (CloudFront / ALB / Nginx)
  */
 export function getClientIp(req: Request): string {
-  const forwarded = req.headers['x-forwarded-for'];
-  if (typeof forwarded === 'string') {
-    return forwarded.split(',')[0].trim();
-  }
-  if (Array.isArray(forwarded) && forwarded[0]) {
-    return forwarded[0].split(',')[0].trim();
-  }
+  // req.ip honours the app's 'trust proxy' setting; the leftmost X-Forwarded-For
+  // entry is client-controlled and must not be used.
   return req.ip || req.socket.remoteAddress || '127.0.0.1';
 }
 
