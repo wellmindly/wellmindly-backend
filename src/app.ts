@@ -30,7 +30,9 @@ const app = express();
 // If CloudFront sits in front, set TRUST_PROXY to a list that also includes its ranges.
 // An empty TRUST_PROXY falls back to the default.
 export const DEFAULT_TRUST_PROXY = 'loopback, uniquelocal';
-app.set('trust proxy', process.env.TRUST_PROXY?.trim() || DEFAULT_TRUST_PROXY);
+const trustProxyEnv = process.env.TRUST_PROXY?.trim() || DEFAULT_TRUST_PROXY;
+// Express treats a string as an IP/subnet list; a hop count must be a real number.
+app.set('trust proxy', /^\d+$/.test(trustProxyEnv) ? Number(trustProxyEnv) : trustProxyEnv);
 
 // Secure security headers - allow cross-origin resource embedding for public assets/avatars
 app.use(
