@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
 import http from 'http';
+import fs from 'fs';
+import path from 'path';
 import type { AddressInfo } from 'net';
 
 vi.mock('../lib/prisma', () => ({ default: {} }));
@@ -41,6 +43,22 @@ describe('counselor asset route hardening', () => {
 
   it('returns 404 for a "." filename', async () => {
     expect(await rawGet('/api/v1/counselors/assets/avatars/%2e')).toBe(404);
+  });
+
+  it('still serves an avatar whose name starts with a dash', async () => {
+    const dir = path.join(process.cwd(), 'uploads', 'avatars');
+    const file = path.join(dir, '-x.png');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(file, Buffer.from('89504e470d0a1a0a', 'hex'));
+    try {
+      expect(await rawGet('/api/v1/counselors/assets/avatars/-x.png')).toBe(200);
+    } finally {
+      fs.rmSync(file, { force: true });
+    }
+  });
+
+  it('returns 404 for a dotfile name', async () => {
+    expect(await rawGet('/api/v1/counselors/assets/avatars/.env')).toBe(404);
   });
 
   it('keeps serving after a bad request', async () => {

@@ -473,8 +473,9 @@ router.get('/assets/:folder/:filename', async (req: Request, res: Response) => {
     res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
     res.setHeader('X-Content-Type-Options', 'nosniff');
 
-    // Reject '.', '..' and anything that isn't a plain file name.
-    const isPlainName = (n: string) => /^[A-Za-z0-9_][A-Za-z0-9._ -]*$/.test(n) && !n.includes('..');
+    // Reject '.', '..', leading dots and anything that isn't a plain file name.
+    // A leading '-' is allowed: imageUpload keeps it in saved names.
+    const isPlainName = (n: string) => /^[A-Za-z0-9_-][A-Za-z0-9._ -]*$/.test(n) && !n.includes('..');
     const candidateFilenames = Array.from(new Set([
       safeFilename,
       underscoreFilename,
@@ -515,8 +516,8 @@ router.get('/assets/:folder/:filename', async (req: Request, res: Response) => {
           return pipeline(fs.createReadStream(localPath), res, (e) => {
             if (!e) return;
             console.error('Asset stream error:', e);
-            if (!res.headersSent) res.status(500).send('Failed to read asset');
-            else res.destroy();
+            // pipeline has already destroyed res; nothing more can be sent.
+            res.destroy();
           });
         }
       }
@@ -536,8 +537,8 @@ router.get('/assets/:folder/:filename', async (req: Request, res: Response) => {
           return pipeline(s3Obj.body, res, (e) => {
             if (!e) return;
             console.error('S3 asset stream error:', e);
-            if (!res.headersSent) res.status(500).send('Failed to read asset');
-            else res.destroy();
+            // pipeline has already destroyed res; nothing more can be sent.
+            res.destroy();
           });
         } else {
           const bytes = await s3Obj.body.transformToByteArray();
