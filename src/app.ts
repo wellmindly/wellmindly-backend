@@ -22,7 +22,11 @@ const app = express();
 
 // Trust reverse proxies (CloudFront / ALB / Nginx) so req.ip and rate limiters
 // inspect X-Forwarded-For rather than treating all production traffic as 127.0.0.1
-app.set('trust proxy', true);
+// Trust exactly N proxy hops (default 1 = the Elastic Beanstalk ALB). `true` trusted
+// the whole X-Forwarded-For chain, so a client could spoof its IP and dodge the
+// rate limiters. Set TRUST_PROXY_HOPS=2 if CloudFront sits in front of the ALB.
+const parsedHops = Number.parseInt(process.env.TRUST_PROXY_HOPS ?? '1', 10);
+app.set('trust proxy', Number.isInteger(parsedHops) && parsedHops >= 0 ? parsedHops : 1);
 
 // Secure security headers - allow cross-origin resource embedding for public assets/avatars
 app.use(

@@ -472,11 +472,17 @@ router.get('/assets/:folder/:filename', async (req: Request, res: Response) => {
     res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
     res.setHeader('X-Content-Type-Options', 'nosniff');
 
+    // Reject '.', '..' and anything that isn't a plain file name.
+    const isPlainName = (n: string) => /^[A-Za-z0-9_][A-Za-z0-9._ -]*$/.test(n) && !n.includes('..');
     const candidateFilenames = Array.from(new Set([
       safeFilename,
       underscoreFilename,
       strippedFilename,
-    ])).filter(Boolean);
+    ])).filter((n) => Boolean(n) && isPlainName(n));
+    if (!safeFolder || candidateFilenames.length === 0) {
+      res.status(404).send('Asset not found');
+      return;
+    }
 
     // 1. Try local disk storage first (fast, reliable, works offline and in local dev)
     const candidateDirs = [
@@ -489,7 +495,9 @@ router.get('/assets/:folder/:filename', async (req: Request, res: Response) => {
     for (const dir of candidateDirs) {
       for (const fname of candidateFilenames) {
         const localPath = path.join(dir, fname);
-        if (fs.existsSync(localPath)) {
+        let isFile = false;
+        try { isFile = fs.statSync(localPath).isFile(); } catch { isFile = false; }
+        if (isFile) {
           const ext = path.extname(fname).toLowerCase();
           const mimeMap: Record<string, string> = {
             '.png': 'image/png',
@@ -502,7 +510,13 @@ router.get('/assets/:folder/:filename', async (req: Request, res: Response) => {
           // run script. Unknown types go out as an opaque download.
           res.setHeader('Content-Type', mimeMap[ext] || 'application/octet-stream');
           res.setHeader('Cache-Control', 'public, max-age=86400');
-          return fs.createReadStream(localPath).pipe(res);
+          const stream = fs.createReadStream(localPath);
+          stream.on('error', (e) => {
+            console.error('Asset stream error:', e);
+            if (!res.headersSent) res.status(500).send('Failed to read asset');
+            else res.destroy();
+          });
+          return stream.pipe(res);
         }
       }
     }
@@ -518,6 +532,11 @@ router.get('/assets/:folder/:filename', async (req: Request, res: Response) => {
         res.setHeader('Cache-Control', 'public, max-age=86400'); // Cache for 24h
 
         if (typeof s3Obj.body.pipe === 'function') {
+          s3Obj.body.on?.('error', (e: unknown) => {
+            console.error('S3 asset stream error:', e);
+            if (!res.headersSent) res.status(500).send('Failed to read asset');
+            else res.destroy();
+          });
           return s3Obj.body.pipe(res);
         } else {
           const bytes = await s3Obj.body.transformToByteArray();
