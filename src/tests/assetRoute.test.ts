@@ -5,6 +5,11 @@ import path from 'path';
 import type { AddressInfo } from 'net';
 
 vi.mock('../lib/prisma', () => ({ default: {} }));
+// Local misses fall through to S3; keep tests offline.
+vi.mock('../utils/s3', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../utils/s3')>()),
+  getS3Object: vi.fn().mockResolvedValue(null),
+}));
 
 import express from 'express';
 import app from '../app';
@@ -46,14 +51,20 @@ describe('counselor asset route hardening', () => {
   });
 
   it('still serves an avatar whose name starts with a dash', async () => {
-    const dir = path.join(process.cwd(), 'uploads', 'avatars');
+    const uploads = path.join(process.cwd(), 'uploads');
+    const dir = path.join(uploads, 'avatars');
     const file = path.join(dir, '-x.png');
+    // Remember what we create so we can leave the tree exactly as we found it.
+    const createdUploads = !fs.existsSync(uploads);
+    const createdDir = !fs.existsSync(dir);
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(file, Buffer.from('89504e470d0a1a0a', 'hex'));
     try {
       expect(await rawGet('/api/v1/counselors/assets/avatars/-x.png')).toBe(200);
     } finally {
       fs.rmSync(file, { force: true });
+      if (createdDir) fs.rmSync(dir, { recursive: true, force: true });
+      if (createdUploads) fs.rmSync(uploads, { recursive: true, force: true });
     }
   });
 
