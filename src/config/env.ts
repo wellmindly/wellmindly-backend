@@ -14,7 +14,14 @@ const envSchema = z.object({
   // Optional comma-separated extra OAuth client IDs accepted as ID-token audiences.
   GOOGLE_CLIENT_IDS: z.string().optional(),
   GOOGLE_CLIENT_SECRET: z.string().optional(),
-  SMTP_HOST: z.string().optional(),
+  // Sign in with Apple. Identity tokens from the native iOS app have the app's
+  // bundle ID as audience, so the default works without any Apple account setup.
+  // APPLE_CLIENT_IDS: optional extra audiences (comma-separated), e.g. a Services ID for web.
+  // TODO(Apple account): token revocation on account deletion (Apple guideline 5.1.1(v))
+  // will need APPLE_TEAM_ID, APPLE_KEY_ID and APPLE_PRIVATE_KEY once the account exists.
+  APPLE_BUNDLE_ID: z.string().optional().default('com.wellmindly.app'),
+  APPLE_CLIENT_IDS: z.string().optional(),
+  SMTP_HOST:z.string().optional(),
   SMTP_PORT: z.coerce.number().optional(),
   SMTP_USER: z.string().optional(),
   SMTP_PASS: z.string().optional(),
