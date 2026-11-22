@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import prisma from '../lib/prisma';
 import { authenticateJWT, authorizeRoles } from '../utils/jwt';
-import { generateQuizFeedback, parseStoredClassification } from '../utils/ai';
+import { generateCheckinInsight, generateQuizFeedback, isCheckinTitle, parseStoredClassification, type QuizFeedback } from '../utils/ai';
 import { bandFor, bandForPercent, WELLBEING_MAX_SCORE } from '../lib/wellbeing';
 
 const router = Router();
@@ -214,10 +214,29 @@ router.post(
       // it was a diagnosis either way, so it is gone rather than rescored.
 
       let storedClassification = classification || 'Completed';
-      let aiFeedbackResult = null;
+      let aiFeedbackResult: QuizFeedback | null = null;
 
       // Call Gemini if API key is present
       try {
+        const titleForAi = quiz?.title || quizTitle || '';
+        if (isCheckinTitle(titleForAi)) {
+          // Check-ins: the app shows fixed copy for the score band
+          // (frontend-student/src/lib/checkinCopy.ts). Gemini used to write the
+          // headline from "Strongest: <dimension>" and told a student at 12/30
+          // they were "feeling pretty good". Now it may add one observation,
+          // written knowing the band, and nothing else.
+          const label = classification || '';
+          const lowBand = /heavy|low|demanding|rough/i.test(label);
+          const answers = req.body?.answers;
+          const line = await generateCheckinInsight(
+            titleForAi,
+            label || 'Completed',
+            lowBand,
+            answers && typeof answers === 'object' && !Array.isArray(answers) ? answers.scores : undefined,
+            !/emotional/i.test(titleForAi)
+          );
+          aiFeedbackResult = { headline: '', narrative: '', tip: '', insights: line ? [line] : [], bandSafe: true };
+        } else {
         const aiFeedback = await generateQuizFeedback(
           quiz?.title || quizTitle || 'Self-reflection Test',
           quizCategory || 'General',
@@ -228,6 +247,7 @@ router.post(
 
         if (aiFeedback) {
           aiFeedbackResult = aiFeedback;
+        }
         }
       } catch (aiErr) {
         console.error('Failed to generate AI feedback:', aiErr);

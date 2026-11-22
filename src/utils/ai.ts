@@ -35,6 +35,72 @@ export interface QuizFeedback {
   narrative: string;
   tip: string;
   insights: string[];
+  /**
+   * True for the check-ins: only `insights[0]` is AI-written, and it was
+   * written knowing the score band. Headline, narrative and tip are left empty
+   * because the app shows fixed, reviewed copy for each band.
+   */
+  bandSafe?: boolean;
+}
+
+/** Titles of the two check-ins whose copy is fixed per band in the app. */
+export function isCheckinTitle(title?: string | null): boolean {
+  const t = (title ?? '').trim().toLowerCase();
+  return t === 'emotional check-in' || t.includes('wellbeing check-in') || t.includes('phq');
+}
+
+/**
+ * One short, personal observation for a check-in result, written inside the
+ * band the score already decided. Returns null if Gemini is off, fails, or
+ * writes something that reads upbeat for a low band.
+ */
+export async function generateCheckinInsight(
+  quizTitle: string,
+  bandLabel: string,
+  lowBand: boolean,
+  dimensions: Record<string, number> | undefined,
+  higherIsHarder: boolean
+): Promise<string | null> {
+  if (!genAI) return null;
+  const dims = dimensions
+    ? Object.entries(dimensions)
+        .map(([k, v]) => `${k}: ${Math.round(Number(v))}/100`)
+        .join(', ')
+    : 'not available';
+  const systemInstruction = `You write ONE sentence (max 22 words) for a student who just finished a short check-in.
+The score band has already been decided and is shown to them separately. You must stay consistent with it.
+- Never contradict the band. If the band is low or heavy, do NOT say they are doing well, positive, sunny, great, or similar.
+- Refer to one specific dimension from their answers. Describe the feeling in plain words, not a symptom or condition.
+- No diagnosis, no advice, no questions, no exclamation marks, no em dashes, no emojis.
+- Never use: journey, wellness, mental health, transform, empower, resilience.
+Return JSON: {"insight": "..."}`;
+  const prompt = `Check-in: ${quizTitle}
+Band: ${bandLabel}
+Dimension scores (${higherIsHarder ? 'higher means it bothered them more often' : 'higher means it felt better'}): ${dims}`;
+  for (const modelName of ['gemini-2.5-flash', 'gemini-2.5-flash-lite']) {
+    try {
+      const model = genAI.getGenerativeModel({
+        model: modelName,
+        generationConfig: { responseMimeType: 'application/json' },
+        systemInstruction,
+      });
+      const result = (await Promise.race([
+        model.generateContent(prompt),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Gemini API call timed out')), 6000)),
+      ])) as any;
+      const parsed = JSON.parse(result.response.text() || '{}');
+      const line = typeof parsed.insight === 'string' ? parsed.insight.trim() : '';
+      if (!line || line.length > 200) continue;
+      if (lowBand && /(doing (really )?well|great|positive|sunny|sun is|thriving|amazing|good place|feeling good)/i.test(line)) {
+        console.warn('[aiFeedback] Dropped check-in insight that contradicted a low band');
+        return null;
+      }
+      return line.replace(/\s*[—–]\s*/g, ', ');
+    } catch (error: any) {
+      console.warn(`[aiFeedback] check-in insight via ${modelName} failed:`, error?.message || error);
+    }
+  }
+  return null;
 }
 
 /**
