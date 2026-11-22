@@ -17,6 +17,23 @@ const s3Client = new S3Client({
     : {}),
 });
 
+/**
+ * Whether uploads are written to (and assets read from) S3.
+ *
+ * Uploads used to reach S3 only when static AWS_ACCESS_KEY_ID/SECRET were set. On Elastic
+ * Beanstalk credentials come from the instance role instead, so profile pictures were
+ * written only to the instance's local disk (/var/app/current/uploads), which is replaced on
+ * every deploy and not shared between instances: the stored avatarUrl then 404s.
+ * Now S3 is used whenever static keys exist OR we run in production (default credential
+ * chain = instance role). S3_UPLOADS=true/false overrides either way.
+ */
+export function isS3Enabled(): boolean {
+  const flag = process.env.S3_UPLOADS?.trim().toLowerCase();
+  if (flag === 'true' || flag === '1') return true;
+  if (flag === 'false' || flag === '0') return false;
+  return Boolean(env.AWS_ACCESS_KEY_ID && env.AWS_SECRET_ACCESS_KEY) || process.env.NODE_ENV === 'production';
+}
+
 export interface UploadResult {
   url: string;
   key: string;
@@ -69,8 +86,8 @@ export async function uploadToS3(
   // Use the public proxy endpoint so direct S3 private permissions never block browsers
   const proxyUrl = `/api/v1/counselors/assets/${key}`;
 
-  // If AWS credentials exist, also sync to S3 bucket
-  if (env.AWS_ACCESS_KEY_ID && env.AWS_SECRET_ACCESS_KEY) {
+  // Durable copy in S3: local disk does not survive a redeploy (see isS3Enabled).
+  if (isS3Enabled()) {
     try {
       const command = new PutObjectCommand({
         Bucket: bucketName,
@@ -82,7 +99,9 @@ export async function uploadToS3(
       await s3Client.send(command);
       console.log(`✅ Uploaded file to S3: ${key}`);
     } catch (error) {
-      console.warn(`❌ S3 Upload failed for key '${key}', using local storage:`, error);
+      // Still served from this instance's disk, but only until the next deploy. If this
+      // shows up in production, give the EB instance role s3:PutObject/GetObject on the bucket.
+      console.error(`❌ S3 upload failed for key '${key}' (bucket ${bucketName}); kept on local disk only:`, error);
     }
   }
 
@@ -96,6 +115,7 @@ export async function uploadToS3(
  * Fetch an object directly from S3 using AWS SDK
  */
 export async function getS3Object(key: string): Promise<{ body: any; contentType?: string } | null> {
+  if (!isS3Enabled()) return null;
   try {
     const command = new GetObjectCommand({
       Bucket: bucketName,
@@ -107,7 +127,11 @@ export async function getS3Object(key: string): Promise<{ body: any; contentType
       contentType: res.ContentType,
     };
   } catch (error) {
-    console.error(`❌ Failed to get S3 object '${key}':`, error);
+    // A missing key is an ordinary 404 (stale avatarUrl); only log real failures.
+    const name = (error as { name?: string })?.name;
+    if (name !== 'NoSuchKey' && name !== 'NotFound') {
+      console.error(`❌ Failed to get S3 object '${key}':`, error);
+    }
     return null;
   }
 }

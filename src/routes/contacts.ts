@@ -17,6 +17,13 @@ import { logWaitlistEvent, waitlistMetrics, maskEmail, generateRequestId } from 
 import { classifySubscriber } from '../utils/subscriberClassifier';
 import { ensureContactRequestSchema } from '../services/contactSchema';
 import { normalizeAvatarUrl } from './v1/counselors';
+import {
+  buildCounselorPipeline,
+  closeInvitationFor,
+  issueCounselorInvitation,
+  REQUESTED_DOCS,
+  sendDocsRequestEmail,
+} from '../services/counselorPipeline';
 
 const router = Router();
 
@@ -819,102 +826,16 @@ router.get(
   authorizeRoles('ADMIN'),
   async (req: Request, res: Response) => {
     try {
-      const page = parseInt(req.query.page as string) || 1;
-      const limit = parseInt(req.query.limit as string) || 10;
-      const skip = (page - 1) * limit;
+      const page = Math.max(1, parseInt(req.query.page as string) || 1);
+      const limit = Math.min(500, Math.max(1, parseInt(req.query.limit as string) || 10));
 
-      const [requests, total] = await Promise.all([
-        prisma.counselorOnboarding.findMany({
-          orderBy: { createdAt: 'desc' },
-          skip,
-          take: limit,
-        }),
-        prisma.counselorOnboarding.count(),
-      ]);
+      // Applications + pending invitations of counselors who have NOT activated yet.
+      // Activated counselors live only in the Counselor Directory (/v1/admin/counselors).
+      const pipeline = await buildCounselorPipeline();
+      const total = pipeline.length;
+      const requests = pipeline.slice((page - 1) * limit, page * limit);
 
-      const emails = requests.map((r) => r.email.trim().toLowerCase());
-      const appIds = requests.map((r) => r.id);
-
-      const [invitations, users, auditLogs] = await Promise.all([
-        prisma.counselorInvitation.findMany({
-          where: { email: { in: emails } },
-        }),
-        prisma.user.findMany({
-          where: { email: { in: emails }, role: 'COUNSELOR' },
-          include: { counselorProfile: true },
-        }),
-        prisma.auditLog.findMany({
-          where: {
-            targetEntity: 'CounselorOnboarding',
-            targetId: { in: appIds },
-          },
-          orderBy: { createdAt: 'desc' },
-        }),
-      ]);
-
-      const invMap = new Map(invitations.map((i) => [i.email.toLowerCase(), i]));
-      const userMap = new Map(users.map((u) => [u.email.toLowerCase(), u]));
-      const auditMap = new Map<string, any[]>();
-      auditLogs.forEach((a) => {
-        if (!a.targetId) return;
-        if (!auditMap.has(a.targetId)) auditMap.set(a.targetId, []);
-        auditMap.get(a.targetId)!.push(a);
-      });
-
-      const enrichedRequests = requests.map((r) => {
-        const cleanEmail = r.email.trim().toLowerCase();
-        const user = userMap.get(cleanEmail);
-        const inv = invMap.get(cleanEmail);
-        const logs = auditMap.get(r.id) || [];
-        const docsLog = logs.find((l) => l.action === 'COUNSELOR_DOCS_REQUESTED');
-        const inviteLog = logs.find((l) => l.action === 'COUNSELOR_INVITE_SENT');
-
-        let stage = 'NEW_APPLICATION';
-        let stageLabel = 'New Application';
-        let stageUpdatedAt: string | null = null;
-        let details: any = null;
-
-        const docsTime = docsLog ? new Date(docsLog.createdAt).getTime() : 0;
-        const inviteTime = inviteLog ? new Date(inviteLog.createdAt).getTime() : (inv ? new Date(inv.createdAt).getTime() : 0);
-
-        if (docsTime > 0 && docsTime >= inviteTime) {
-          // Documents were requested for this applicant
-          stage = 'DOCS_REQUESTED';
-          stageLabel = 'Degree & ID Docs Requested';
-          stageUpdatedAt = docsLog!.createdAt.toISOString();
-          details = docsLog!.details;
-        } else if (inv || inviteLog) {
-          if (inv?.used || (user && user.counselorProfile?.status === 'ACTIVE')) {
-            stage = 'ONBOARDED';
-            stageLabel = 'Onboarded & Active';
-            stageUpdatedAt = user?.counselorProfile?.updatedAt ? user.counselorProfile.updatedAt.toISOString() : (inv?.createdAt ? inv.createdAt.toISOString() : null);
-          } else {
-            stage = 'INVITE_SENT';
-            stageLabel = 'Invitation Link Dispatched';
-            stageUpdatedAt = inv?.createdAt ? inv.createdAt.toISOString() : (inviteLog?.createdAt ? inviteLog.createdAt.toISOString() : null);
-            details = { expiresAt: inv?.expiresAt };
-          }
-        } else if (docsLog) {
-          stage = 'DOCS_REQUESTED';
-          stageLabel = 'Degree & ID Docs Requested';
-          stageUpdatedAt = docsLog.createdAt.toISOString();
-          details = docsLog.details;
-        } else if (user && user.counselorProfile?.status === 'ACTIVE') {
-          stage = 'ONBOARDED';
-          stageLabel = 'Onboarded & Active';
-          stageUpdatedAt = user.counselorProfile.updatedAt.toISOString();
-        }
-
-        return {
-          ...r,
-          stage,
-          stageLabel,
-          stageUpdatedAt,
-          details,
-        };
-      });
-
-      res.status(200).json({ requests: enrichedRequests, total, page, limit });
+      res.status(200).json({ requests, total, page, limit });
     } catch (error) {
       console.error('Error fetching counselor contacts:', error);
       res.status(500).json({ error: 'Failed to fetch counselor applications' });
@@ -1275,32 +1196,14 @@ router.post(
       const application = await prisma.counselorOnboarding.findUnique({ where: { id } });
 
       if (!application) {
-        res.status(404).json({ error: 'Counselor application not found' });
+        res.status(404).json({ error: 'Counselor application not found. It may have been deleted; refresh the list.' });
         return;
       }
 
-      const emailSubject = 'Document & Certificate Verification Request - WellMindly Counselor Application';
-      const emailHtml = `
-        <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1e293b; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 16px;">
-          <h2 style="color: #4f46e5; margin-top: 0;">WellMindly Counselor Application Verification</h2>
-          <p>Hello <strong>${application.name}</strong>,</p>
-          <p>Thank you for submitting your counselor onboarding application to WellMindly. We are reviewing your application credentials (<em>${application.credentials}</em>).</p>
-          <p>To proceed with your application review and onboard you to our counselor network, please reply to this email with the following documents attached:</p>
-          <ul style="padding-left: 20px; color: #334155;">
-            <li><strong>Degree & Professional Certificates</strong> (M.A., Ph.D., RBT, or professional certifications)</li>
-            <li><strong>Government-issued Identity Document</strong> (Passport or ID)</li>
-            <li><strong>Proof of Professional License / Practice Standing</strong></li>
-            <li>Any additional background documentation or reference letters</li>
-          </ul>
-          <p>If you have any questions, feel free to reply directly to this message or contact our team at <a href="mailto:wellmindly@gmail.com" style="color: #4f46e5;">wellmindly@gmail.com</a>.</p>
-          <p style="margin-top: 24px; color: #64748b; font-size: 13px;">Warm regards,<br /><strong>The WellMindly Counselor Operations Team</strong></p>
-        </div>
-      `;
-
-      await sendEmail({
+      const emailDelivered = await sendDocsRequestEmail({
         to: application.email,
-        subject: emailSubject,
-        html: emailHtml,
+        name: application.name,
+        credentials: application.credentials,
       });
 
       // Record journey stage in audit log for tracking
@@ -1312,7 +1215,8 @@ router.post(
           actorId: req.user?.sub || null,
           details: {
             requestedBy: req.user?.email || 'admin',
-            requestedDocs: ['Degree Certificate', 'Identity Document', 'Practice Standing License'],
+            requestedDocs: REQUESTED_DOCS,
+            emailDelivered,
             timestamp: new Date().toISOString(),
           },
         },
@@ -1320,7 +1224,10 @@ router.post(
 
       res.status(200).json({
         success: true,
-        message: `Document & certificate request email sent to ${application.email}`,
+        emailDelivered,
+        message: emailDelivered
+          ? `Document & certificate request email sent to ${application.email}`
+          : `Document request recorded, but the email to ${application.email} could not be sent. Contact them directly.`,
       });
     } catch (error) {
       console.error('Error requesting counselor documents:', error);
@@ -1339,53 +1246,26 @@ router.post(
       const application = await prisma.counselorOnboarding.findUnique({ where: { id } });
 
       if (!application) {
-        res.status(404).json({ error: 'Counselor application not found' });
+        res.status(404).json({ error: 'Counselor application not found. It may have been deleted; refresh the list.' });
         return;
       }
 
-      const nameParts = application.name.trim().split(' ');
+      const nameParts = application.name.trim().split(/\s+/);
       const firstName = nameParts[0] || application.name;
       const lastName = nameParts.slice(1).join(' ') || 'Counselor';
-      const cleanEmail = application.email.trim().toLowerCase();
+      const cleanEmail = normalizeEmail(application.email);
 
-      let user = await prisma.user.findUnique({ where: { email: cleanEmail } });
+      const user = await prisma.user.findFirst({ where: { email: { equals: cleanEmail, mode: 'insensitive' } } });
 
       if (!user) {
-        const token = crypto.randomBytes(32).toString('hex');
-        const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
-
-        const invitation = await prisma.counselorInvitation.upsert({
-          where: { email: cleanEmail },
-          update: { firstName, lastName, token, expiresAt, used: false },
-          create: { email: cleanEmail, firstName, lastName, token, expiresAt },
+        const { invitation, setupUrl, emailDelivered } = await issueCounselorInvitation(req, {
+          email: cleanEmail,
+          firstName,
+          lastName,
+          template: 'approved',
+          credentials: application.credentials,
         });
 
-        const host = req.get('host') || '';
-        const origin = req.get('origin') || '';
-        const isLocalDev = (host.includes('localhost') || host.includes('127.0.0.1')) && !origin.includes('wellmindly.com');
-        const counselorPortalBase = isLocalDev ? (env.COUNSELOR_PORTAL_URL || 'http://localhost:5174') : 'https://counselor.wellmindly.com';
-        const setupUrl = `${counselorPortalBase}/setup-profile?token=${token}`;
-
-        const emailDelivered = await sendEmail({
-          to: cleanEmail,
-          sensitive: true,
-          subject: 'Congratulations! Your WellMindly Counselor Application is Approved',
-          html: `
-            <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1e293b; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 16px;">
-              <h2 style="color: #4f46e5; margin-top: 0;">Application Approved & Onboarding Invitation</h2>
-              <p>Hello <strong>${firstName} ${lastName}</strong>,</p>
-              <p>We are delighted to inform you that your counselor onboarding application (<em>${application.credentials}</em>) has been <strong>approved</strong> by the WellMindly team!</p>
-              <p>Please click the button below to complete your registration, set up your account password, and configure your counselor profile & availability slots:</p>
-              <p style="margin: 28px 0;">
-                <a href="${setupUrl}" style="background-color: #4f46e5; color: white; padding: 12px 28px; text-decoration: none; border-radius: 8px; font-weight: bold; display: inline-block; box-shadow: 0 4px 12px rgba(79, 70, 229, 0.3);">Set Up Counselor Profile</a>
-              </p>
-              <p style="color: #64748b; font-size: 13px;">Direct Link: <a href="${setupUrl}" style="color: #4f46e5;">${setupUrl}</a></p>
-              <p style="color: #94a3b8; font-size: 12px; margin-top: 24px;">This invitation link will remain valid for 7 days.</p>
-            </div>
-          `,
-        });
-
-        // Record journey stage in audit log for tracking
         await prisma.auditLog.create({
           data: {
             action: 'COUNSELOR_INVITE_SENT',
@@ -1395,6 +1275,7 @@ router.post(
             details: {
               approvedBy: req.user?.email || 'admin',
               targetEmail: cleanEmail,
+              emailDelivered,
               // setupUrl deliberately not stored: it carries the invite token.
               timestamp: new Date().toISOString(),
             },
@@ -1410,53 +1291,59 @@ router.post(
             ? `Counselor application approved! Onboarding invitation emailed to ${cleanEmail}`
             : `Counselor application approved, but the invitation email to ${cleanEmail} could not be sent. Share the setup link with them directly.`,
           setupUrl,
-          invitation,
+          invitation: { id: invitation.id, email: invitation.email, expiresAt: invitation.expiresAt },
         });
-      } else {
-        // The application form is public, so its email is unverified. Turning
-        // whatever account owns that address into a counselor let anyone apply
-        // with a student's (or an admin's) email and have it converted on
-        // approval. Only an existing counselor account is reused here.
-        if (user.role !== 'COUNSELOR') {
-          res.status(409).json({
-            error: `${cleanEmail} already belongs to a ${user.role.toLowerCase()} account, so it cannot be approved as a counselor. Ask the applicant to apply with a different email.`,
-          });
-          return;
-        }
+        return;
+      }
 
-        const existingProfile = await prisma.counselorProfile.findUnique({ where: { userId: user.id } });
-        if (!existingProfile) {
-          await prisma.counselorProfile.create({
-            data: {
-              userId: user.id,
-              credentials: application.credentials,
-              specializations: ['Youth Wellbeing', 'Mentorship'],
-              bio: application.experience || application.message,
-              phone: application.phone,
-              status: 'ACTIVE',
-            },
-          });
-        }
+      // The application form is public, so its email is unverified. Turning
+      // whatever account owns that address into a counselor let anyone apply
+      // with a student's (or an admin's) email and have it converted on
+      // approval. Only an existing counselor account is reused here.
+      if (user.role !== 'COUNSELOR') {
+        res.status(409).json({
+          error: `${cleanEmail} already belongs to a ${user.role.toLowerCase()} account, so it cannot be approved as a counselor. Ask the applicant to apply with a different email.`,
+        });
+        return;
+      }
 
-        await prisma.auditLog.create({
+      const existingProfile = await prisma.counselorProfile.findUnique({ where: { userId: user.id } });
+      if (!existingProfile) {
+        await prisma.counselorProfile.create({
           data: {
-            action: 'COUNSELOR_ACTIVATED',
-            targetEntity: 'CounselorOnboarding',
-            targetId: id,
-            actorId: req.user?.sub || null,
-            details: {
-              approvedBy: req.user?.email || 'admin',
-              targetEmail: cleanEmail,
-              timestamp: new Date().toISOString(),
-            },
+            userId: user.id,
+            credentials: application.credentials,
+            specializations: ['Youth Wellbeing', 'Mentorship'],
+            bio: application.experience || application.message,
+            phone: application.phone,
+            status: 'ACTIVE',
           },
         });
-
-        res.status(200).json({
-          success: true,
-          message: `Counselor application approved! Account for ${cleanEmail} activated as Counselor.`,
-        });
       }
+      // The counselor already has an account: any open invite link is now stale.
+      await closeInvitationFor(cleanEmail);
+
+      await prisma.auditLog.create({
+        data: {
+          action: 'COUNSELOR_ACTIVATED',
+          targetEntity: 'CounselorOnboarding',
+          targetId: id,
+          actorId: req.user?.sub || null,
+          details: {
+            approvedBy: req.user?.email || 'admin',
+            targetEmail: cleanEmail,
+            timestamp: new Date().toISOString(),
+          },
+        },
+      });
+
+      res.status(200).json({
+        success: true,
+        alreadyActivated: true,
+        message: existingProfile
+          ? `${cleanEmail} has already activated a counselor account; they are listed in the Counselor Directory.`
+          : `Counselor application approved! Account for ${cleanEmail} activated as Counselor.`,
+      });
     } catch (error) {
       console.error('Error approving counselor application:', error);
       res.status(500).json({ error: 'Failed to approve counselor application' });
