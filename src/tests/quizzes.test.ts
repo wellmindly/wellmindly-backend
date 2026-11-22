@@ -30,7 +30,7 @@ describe('Quizzes and Health API Routes', () => {
   });
 
   describe('POST /api/quizzes/submit (Authenticated Sanity Test)', () => {
-    it('should successfully submit a quiz and return non-null AI feedback descriptive report', async () => {
+    it('check-ins return band-safe feedback: no AI headline, at most one AI line', async () => {
       const student = await prisma.user.findFirst({
         where: { role: 'STUDENT' }
       });
@@ -44,24 +44,30 @@ describe('Quizzes and Health API Routes', () => {
         universityId: student.universityId,
       });
 
+      // The app shows fixed copy per score band for check-ins
+      // (frontend-student/src/lib/checkinCopy.ts). Gemini may add one
+      // observation, written knowing the band, and nothing else. This holds
+      // with or without a live GEMINI_API_KEY.
       const res = await request(app)
         .post('/api/quizzes/submit')
         .set('Authorization', `Bearer ${token}`)
         .send({
-          quizTitle: 'PHQ-9',
-          quizCategory: 'Clinical',
-          overallScore: 8,
-          maxScore: 27,
-          answers: { 1: 3, 2: 2, 3: 3 }
+          quizTitle: 'Emotional check-in',
+          quizCategory: 'Wellbeing',
+          overallScore: 12,
+          maxScore: 30,
+          classification: 'A heavy stretch',
+          answers: { scores: { 'Good spirits': 50, Calm: 25, Energy: 25, Rested: 25, Engaged: 25, Connection: 0 } }
         });
 
       expect(res.status).toBe(201);
+      expect(res.body.classification).toBe('A heavy stretch');
       expect(res.body.aiFeedback).not.toBeNull();
-      expect(res.body.aiFeedback.headline).toBeDefined();
-      expect(res.body.aiFeedback.narrative).toBeDefined();
-      expect(res.body.aiFeedback.tip).toBeDefined();
+      expect(res.body.aiFeedback.bandSafe).toBe(true);
+      expect(res.body.aiFeedback.headline).toBe('');
+      expect(res.body.aiFeedback.narrative).toBe('');
       expect(res.body.aiFeedback.insights).toBeInstanceOf(Array);
-      expect(res.body.aiFeedback.insights.length).toBeGreaterThan(0);
+      expect(res.body.aiFeedback.insights.length).toBeLessThanOrEqual(1);
     }, 30000);
   });
 });
