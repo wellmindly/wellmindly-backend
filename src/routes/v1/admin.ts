@@ -10,6 +10,14 @@ import { logAuditEvent } from '../../utils/auditLogger';
 import { escapeHtml } from '../../utils/escapeHtml';
 import { env } from '../../config/env';
 import { normalizeAvatarUrl } from './counselors';
+import {
+  closeInvitationFor,
+  findActivatedCounselorEmails,
+  issueCounselorInvitation,
+  normalizeEmail,
+  REQUESTED_DOCS,
+  sendDocsRequestEmail,
+} from '../../services/counselorPipeline';
 
 const router = Router();
 
@@ -181,7 +189,8 @@ router.use(authenticateJWT, requireRoles(['ADMIN', 'SUPER_ADMIN']));
 
 /**
  * POST /api/v1/admin/counselors/invite
- * Create or refresh an invitation for a counselor and send setup email
+ * Create or refresh an invitation for a counselor and send setup email.
+ * The invitee is listed under Counselor Applications until they activate.
  */
 router.post('/counselors/invite', async (req: AuthenticatedRequest, res: Response) => {
   const { email, firstName, lastName } = req.body as {
@@ -190,70 +199,40 @@ router.post('/counselors/invite', async (req: AuthenticatedRequest, res: Respons
     lastName?: string;
   };
 
-  if (!email || !firstName || !lastName || typeof email !== 'string' || typeof firstName !== 'string' || typeof lastName !== 'string') {
+  if (
+    typeof email !== 'string' || typeof firstName !== 'string' || typeof lastName !== 'string' ||
+    !email.trim() || !firstName.trim() || !lastName.trim()
+  ) {
     sendError(res, 'INVALID_INPUT', 'Email, firstName, and lastName are required', 400);
     return;
   }
 
-  const cleanEmail = email.trim().toLowerCase();
-
-  // Check if a registered user already exists with this email
-  const existingUser = await prisma.user.findUnique({ where: { email: cleanEmail } });
-  if (existingUser) {
-    sendError(res, 'USER_EXISTS', `A registered user with email '${cleanEmail}' already exists.`, 400);
+  const cleanEmail = normalizeEmail(email);
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+    sendError(res, 'INVALID_INPUT', 'Enter a valid email address', 400);
     return;
   }
 
-  const token = crypto.randomBytes(32).toString('hex');
-  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
-
-  // Upsert invitation so re-inviting refreshes the token and expiration
-  const invitation = await prisma.counselorInvitation.upsert({
-    where: { email: cleanEmail },
-    update: {
-      firstName,
-      lastName,
-      token,
-      expiresAt,
-      used: false,
-    },
-    create: {
-      email: cleanEmail,
-      firstName,
-      lastName,
-      token,
-      expiresAt,
-    },
+  // Check if a registered user already exists with this email
+  const existingUser = await prisma.user.findFirst({
+    where: { email: { equals: cleanEmail, mode: 'insensitive' } },
+    include: { counselorProfile: { select: { id: true } } },
   });
+  if (existingUser) {
+    if (existingUser.role === 'COUNSELOR' && existingUser.counselorProfile) {
+      await closeInvitationFor(cleanEmail);
+      sendError(res, 'ALREADY_ACTIVATED', `${cleanEmail} has already activated a counselor account and is listed in the Counselor Directory.`, 409);
+      return;
+    }
+    sendError(res, 'USER_EXISTS', `A registered ${existingUser.role.toLowerCase()} account with email '${cleanEmail}' already exists.`, 409);
+    return;
+  }
 
-  const host = req.get('host') || '';
-  const origin = req.get('origin') || '';
-  const isLocalDev = (host.includes('localhost') || host.includes('127.0.0.1')) && !origin.includes('wellmindly.com');
-  const counselorPortalBase = isLocalDev ? (env.COUNSELOR_PORTAL_URL || 'http://localhost:5174') : 'https://counselor.wellmindly.com';
-  const setupUrl = `${counselorPortalBase}/setup-profile?token=${token}`;
-
-  const emailDelivered = await sendEmail({
-    to: cleanEmail,
-    sensitive: true,
-    subject: 'Invitation to Join WellMindly as a Counselor',
-    html: `
-      <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1e293b; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 12px;">
-        <h2 style="color: #4f46e5; margin-top: 0;">Welcome to WellMindly</h2>
-        <p>Hello <strong>${escapeHtml(firstName)} ${escapeHtml(lastName)}</strong>,</p>
-        <p>You have been invited to join the WellMindly team as a professional counselor.</p>
-        <p>Please click the button below to complete your registration, set up your password, and define your profile:</p>
-        <p style="margin: 28px 0;">
-          <a href="${setupUrl}" style="background-color: #4f46e5; color: white; padding: 12px 28px; text-decoration: none; border-radius: 8px; font-weight: bold; display: inline-block; box-shadow: 0 4px 12px rgba(79, 70, 229, 0.3);">Setup Counselor Profile</a>
-        </p>
-        <p style="color: #64748b; font-size: 13px;">Direct Link: <a href="${setupUrl}" style="color: #4f46e5;">${setupUrl}</a></p>
-        <p style="color: #94a3b8; font-size: 12px; margin-top: 24px;">This invitation link will expire in 7 days.</p>
-      </div>
-    `,
+  const { invitation, setupUrl, emailDelivered } = await issueCounselorInvitation(req, {
+    email: cleanEmail,
+    firstName: firstName.trim(),
+    lastName: lastName.trim(),
   });
-
-  // The setup URL carries the invite token; it is returned to the admin below
-  // but kept out of server logs and the audit trail.
-  console.log(`📧 [Counselor Invite] Setup link generated for ${cleanEmail}`);
 
   logAuditEvent({
     actorId: req.user?.sub,
@@ -261,7 +240,7 @@ router.post('/counselors/invite', async (req: AuthenticatedRequest, res: Respons
     targetEntity: 'CounselorInvitation',
     targetId: invitation.id,
     ipAddress: req.ip || null,
-    details: { email: cleanEmail, firstName, lastName },
+    details: { email: cleanEmail, firstName, lastName, emailDelivered },
   });
 
   sendSuccess(
@@ -272,10 +251,125 @@ router.post('/counselors/invite', async (req: AuthenticatedRequest, res: Respons
         : 'Invitation created, but the email could not be sent. Share the setup link with the counselor directly.',
       emailDelivered,
       setupUrl,
-      invitation,
+      invitation: { id: invitation.id, email: invitation.email, expiresAt: invitation.expiresAt },
     },
     201
   );
+});
+
+/** Loads an invitation that is still pending (not used, invitee not activated). */
+async function loadPendingInvitation(id: string, res: Response) {
+  const invitation = await prisma.counselorInvitation.findUnique({ where: { id } });
+  if (!invitation) {
+    sendError(res, 'NOT_FOUND', 'Invitation not found. It may have been revoked; refresh the list.', 404);
+    return null;
+  }
+  const activated = await findActivatedCounselorEmails([invitation.email]);
+  if (invitation.used || activated.size > 0) {
+    if (!invitation.used) await closeInvitationFor(invitation.email);
+    sendError(res, 'ALREADY_ACTIVATED', `${invitation.email} has already activated their counselor account.`, 409);
+    return null;
+  }
+  return invitation;
+}
+
+/**
+ * POST /api/v1/admin/counselors/invitations/:id/resend
+ * Refresh the token/expiry of a pending invitation and email the setup link again.
+ */
+router.post('/counselors/invitations/:id/resend', async (req: AuthenticatedRequest, res: Response) => {
+  const invitation = await loadPendingInvitation(String(req.params.id), res);
+  if (!invitation) return;
+
+  const result = await issueCounselorInvitation(req, {
+    email: invitation.email,
+    firstName: invitation.firstName,
+    lastName: invitation.lastName,
+  });
+
+  logAuditEvent({
+    actorId: req.user?.sub,
+    action: 'INVITE_COUNSELOR',
+    targetEntity: 'CounselorInvitation',
+    targetId: invitation.id,
+    ipAddress: req.ip || null,
+    details: { email: invitation.email, resend: true, emailDelivered: result.emailDelivered },
+  });
+
+  sendSuccess(res, {
+    message: result.emailDelivered
+      ? `Invitation re-sent to ${invitation.email}`
+      : `Invitation refreshed, but the email to ${invitation.email} could not be sent. Share the setup link directly.`,
+    emailDelivered: result.emailDelivered,
+    setupUrl: result.setupUrl,
+    invitation: { id: result.invitation.id, email: result.invitation.email, expiresAt: result.invitation.expiresAt },
+  });
+});
+
+/**
+ * POST /api/v1/admin/counselors/invitations/:id/request-docs
+ * Ask a directly-invited counselor for their degree / ID / license documents.
+ */
+router.post('/counselors/invitations/:id/request-docs', async (req: AuthenticatedRequest, res: Response) => {
+  const invitation = await loadPendingInvitation(String(req.params.id), res);
+  if (!invitation) return;
+
+  const emailDelivered = await sendDocsRequestEmail({
+    to: invitation.email,
+    name: `${invitation.firstName} ${invitation.lastName}`.trim(),
+  });
+
+  await prisma.auditLog.create({
+    data: {
+      action: 'COUNSELOR_DOCS_REQUESTED',
+      targetEntity: 'CounselorInvitation',
+      targetId: invitation.id,
+      actorId: req.user?.sub || null,
+      details: {
+        requestedBy: req.user?.email || 'admin',
+        requestedDocs: REQUESTED_DOCS,
+        emailDelivered,
+        timestamp: new Date().toISOString(),
+      },
+    },
+  });
+
+  sendSuccess(res, {
+    emailDelivered,
+    message: emailDelivered
+      ? `Document & certificate request email sent to ${invitation.email}`
+      : `Document request recorded, but the email to ${invitation.email} could not be sent. Contact them directly.`,
+  });
+});
+
+/**
+ * DELETE /api/v1/admin/counselors/invitations/:id
+ * Revoke a pending invitation (its setup link stops working immediately).
+ */
+router.delete('/counselors/invitations/:id', async (req: AuthenticatedRequest, res: Response) => {
+  const id = String(req.params.id);
+  const invitation = await prisma.counselorInvitation.findUnique({ where: { id } });
+  if (!invitation) {
+    sendError(res, 'NOT_FOUND', 'Invitation not found. It may already have been revoked.', 404);
+    return;
+  }
+  if (invitation.used) {
+    sendError(res, 'ALREADY_ACTIVATED', 'This invitation has already been used to activate an account.', 409);
+    return;
+  }
+
+  await prisma.counselorInvitation.delete({ where: { id } });
+
+  logAuditEvent({
+    actorId: req.user?.sub,
+    action: 'REVOKE_COUNSELOR_INVITE',
+    targetEntity: 'CounselorInvitation',
+    targetId: id,
+    ipAddress: req.ip || null,
+    details: { email: invitation.email },
+  });
+
+  sendSuccess(res, { message: `Invitation for ${invitation.email} revoked.` });
 });
 
 /**
@@ -287,7 +381,10 @@ router.get('/counselors', async (req: AuthenticatedRequest, res: Response) => {
   const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 20));
   const status = req.query.status as string;
 
-  const where: any = { deletedAt: null };
+  // Directory = counselors who have activated: a CounselorProfile only exists once the
+  // invitee completed /v1/counselors/setup-profile (or an existing counselor account was
+  // approved). Pending invitations are listed under Counselor Applications instead.
+  const where: any = { deletedAt: null, user: { role: 'COUNSELOR', deletedAt: null } };
   if (status) where.status = status;
 
   const [total, counselors] = await Promise.all([

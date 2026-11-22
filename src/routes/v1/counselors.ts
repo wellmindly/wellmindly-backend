@@ -134,6 +134,23 @@ router.post('/setup-profile', async (req: Request, res: Response) => {
     return;
   }
 
+  // The invitee may already have an account (activated through another invite, or an
+  // approved application). Creating a second user used to fail with a unique-constraint
+  // 500 and left the invitation open, so the counselor stayed listed as "invited".
+  const existingUser = await prisma.user.findFirst({
+    where: { email: { equals: invitation.email, mode: 'insensitive' } },
+    include: { counselorProfile: { select: { id: true } } },
+  });
+  if (existingUser) {
+    if (existingUser.role === 'COUNSELOR' && existingUser.counselorProfile) {
+      await prisma.counselorInvitation.update({ where: { id: invitation.id }, data: { used: true } });
+      sendError(res, 'ALREADY_ACTIVATED', 'Your counselor account is already active. Please sign in instead.', 409);
+      return;
+    }
+    sendError(res, 'USER_EXISTS', 'An account with this email already exists. Contact the WellMindly team for help.', 409);
+    return;
+  }
+
   const passwordHash = await bcrypt.hash(password, 10);
 
   // Transaction: Create user, create profile, mark invite used
